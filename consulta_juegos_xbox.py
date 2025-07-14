@@ -84,6 +84,12 @@ traducciones = {
 class XboxGameLookupApp(ctk.CTk):
     def __init__(self):
         super().__init__()
+        icon_path = os.path.abspath("icon.ico")
+        if not os.path.exists(icon_path):
+            print(f"¡No se encontró el icono en {icon_path}!")
+        else:
+            self.iconbitmap(icon_path)
+
         self.title("SVXboxGamesFinder - By: @erickmacielsoto - Reviewed by: @jasontorresb")
         self.geometry("980x720")
         # self.resizable(False, False) # Opcional: para evitar que la ventana se pueda redimensionar
