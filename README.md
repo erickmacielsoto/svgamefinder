@@ -20,20 +20,16 @@ Python 3.x
 
 En sistemas Linux (Debian/Ubuntu), asegúrate de tener python3-tk instalado para el correcto funcionamiento de tkinter:
 
-Bash
-
 sudo apt update
 sudo apt install python3-tk
 Instalación y Ejecución
 Clona el repositorio:
 
-Bash
 
 git clone https://github.com/erickmacielsoto/consulta-juegos-xbox.git
 cd consulta-juegos-xbox
 Crea y activa un entorno virtual (recomendado):
 
-Bash
 
 python3 -m venv venv
 source venv/bin/activate  # En Linux/macOS
@@ -42,12 +38,10 @@ source venv/bin/activate  # En Linux/macOS
 Instala las dependencias:
 Con tu entorno virtual activado, instala las bibliotecas necesarias:
 
-Bash
 
 pip install -r requirements.txt
 Ejecuta la aplicación:
 
-Bash
 
 python consulta_juegos_xbox.py
 
@@ -56,7 +50,6 @@ Puedes empaquetar la aplicación en un solo archivo ejecutable para Windows o Li
 
 Instala PyInstaller (dentro de tu entorno virtual activado):
 
-Bash
 
 pip install pyinstaller
 Genera el ejecutable:
@@ -82,12 +75,17 @@ GET /api/releases?name={nombre}&limit={limite} — Buscar lanzamientos por nombr
 
 📁 Estructura de Archivos
 consulta-juegos-xbox/
-│
-├── consulta_juegos_xbox.py   # Código principal de la aplicación
-├── requirements.txt          # Dependencias del proyecto
-├── README.md                 # Este archivo
-├── LICENSE                   # Licencia MIT
-└── icon.ico                  # Ícono opcional para el ejecutable (para Windows)
+
+# Código principal de la aplicación
+consulta_juegos_xbox.py  
+# Dependencias del proyecto
+requirements.txt         
+# Este archivo
+README.md                
+# Licencia MIT
+LICENSE                   
+# Ícono opcional para el ejecutable (para Windows)
+icon.ico                 
 
 📜 Licencia
 Este proyecto está bajo la licencia MIT.
@@ -100,8 +98,10 @@ Puedes usar, modificar y compartir el código libremente, incluso en proyectos c
 Erick Maciel
 
 GitHub: @erickmacielsoto
+
 TikTok: @elerickmj
 
 Probado por
 Jason Torres
+
 GitHub: @jasontorresb
