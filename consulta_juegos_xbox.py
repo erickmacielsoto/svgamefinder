@@ -84,9 +84,9 @@ traducciones = {
 class XboxGameLookupApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Consulta Juegos Xbox - By: erickmacielsoto - Tested by: @jasontorresb")
+        self.title("SVXboxGamesFinder - By: @erickmacielsoto - Reviewed by: @jasontorresb")
         self.geometry("980x720")
-        self.resizable(False, False) # Opcional: para evitar que la ventana se pueda redimensionar
+        # self.resizable(False, False) # Opcional: para evitar que la ventana se pueda redimensionar
 
         # Descomentar para habilitar el caché de solicitudes
         # requests_cache.install_cache('xbox_api_cache', expire_after=3600)
@@ -283,8 +283,9 @@ class XboxGameLookupApp(ctk.CTk):
             # Re-vincular el menú contextual
             self.tree_releases.bind("<Button-3>", lambda e: self._mostrar_menu_contextual(e, self.tree_releases, self.menu_release))
 
-        # Actualizar el texto del label de estado si no está vacío
-        if self.status_label.cget("text") not in ["", self.traducir("cargando"), self.traducir("busqueda_completada"), self.traducir("no_results_found"), self.traducir("error_busqueda")]:
+        # Actualizar el texto del label de estado si no es un mensaje transitorio
+        current_status_text = self.status_label.cget("text")
+        if current_status_text not in [self.traducir("cargando"), self.traducir("busqueda_completada"), self.traducir("no_results_found"), self.traducir("error_busqueda")]:
              self.status_label.configure(text="") # Limpiar si no es un estado transitorio
 
     def _cambiar_idioma(self, val):
@@ -379,12 +380,13 @@ class XboxGameLookupApp(ctk.CTk):
         self.switch = ctk.CTkSwitch(frame_top, text=self.traducir("modo_oscuro"), variable=self.switch_var, command=self._toggle_mode)
         self.switch.pack(side="left", padx=10)
 
+        self.selector_idioma = ctk.CTkOptionMenu(frame_top, values=["Español", "English", "Português"],
+                                                command=self._cambiar_idioma)
+        self.selector_idioma.pack(side="right") 
+
         self.idioma_menu_label = ctk.CTkLabel(frame_top, text=f"🌐 {self.traducir('idioma')}:")
         self.idioma_menu_label.pack(side="right", padx=(5, 0))
 
-        self.selector_idioma = ctk.CTkOptionMenu(frame_top, values=["Español", "English", "Português"],
-                                                command=self._cambiar_idioma)
-        self.selector_idioma.pack(side="right")
         self.selector_idioma.set({"es": "Español", "en": "English", "pt": "Português"}.get(self.idioma_actual, "Español"))
 
         self.label_entrada = ctk.CTkLabel(self, text=self.traducir("ingresa_texto"))
@@ -411,11 +413,14 @@ class XboxGameLookupApp(ctk.CTk):
         self.tree_title_ids = ttk.Treeview(self.frame_title, columns=columns_title, show="headings", height=8)
         for col in columns_title:
             self.tree_title_ids.heading(col, text=self.traducir("col_" + col))
-            self.tree_title_ids.column(col, width=200 if col == "name" else 120, stretch=True) # stretch=True para que las columnas se ajusten
+            # Ajustar anchos y permitir estiramiento
+            if col == "name":
+                self.tree_title_ids.column(col, width=200, stretch=True)
+            else:
+                self.tree_title_ids.column(col, width=120, stretch=True) 
         self.tree_title_ids.pack(fill="both", expand=True)
 
-        # No crear los menús aquí directamente, se recrearán en _update_ui_texts
-        # self.menu_title = self._crear_menu_contextual(self.tree_title_ids) # Esto se hará en _update_ui_texts
+        # Los menús se crearán/recrearán en _update_ui_texts
         self.tree_title_ids.bind("<Control-c>", lambda e: self._copiar_ctrl_c(e, self.tree_title_ids))
 
         # Frame y Treeview para Releases
@@ -428,11 +433,14 @@ class XboxGameLookupApp(ctk.CTk):
         self.tree_releases = ttk.Treeview(self.frame_release, columns=columns_release, show="headings", height=10)
         for col in columns_release:
             self.tree_releases.heading(col, text=self.traducir("col_" + col))
-            self.tree_releases.column(col, width=300 if col == "name" else 150, stretch=True) # stretch=True
+            # Ajustar anchos y permitir estiramiento
+            if col == "name":
+                self.tree_releases.column(col, width=300, stretch=True)
+            else:
+                self.tree_releases.column(col, width=150, stretch=True)
         self.tree_releases.pack(fill="both", expand=True)
 
-        # No crear los menús aquí directamente
-        # self.menu_release = self._crear_menu_contextual(self.tree_releases) # Esto se hará en _update_ui_texts
+        # Los menús se crearán/recrearán en _update_ui_texts
         self.tree_releases.bind("<Control-c>", lambda e: self._copiar_ctrl_c(e, self.tree_releases))
 
 if __name__ == "__main__":
