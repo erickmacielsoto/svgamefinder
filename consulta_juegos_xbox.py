@@ -84,7 +84,7 @@ traducciones = {
 class XboxGameLookupApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Consulta Juegos Xbox - By: elerickmj - Tested by: jasondtb16")
+        self.title("Consulta Juegos Xbox - By: erickmacielsoto - Tested by: @jasontorresb")
         self.geometry("980x720")
         self.resizable(False, False) # Opcional: para evitar que la ventana se pueda redimensionar
 
