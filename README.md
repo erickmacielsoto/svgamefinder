@@ -26,7 +26,7 @@ Instalación y Ejecución
 Clona el repositorio:
 
 
-git clone https://github.com/erickmacielsoto/consulta-juegos-xbox.git
+git clone https://github.com/erickmacielsoto/svgamefinder
 cd consulta-juegos-xbox
 Crea y activa un entorno virtual (recomendado):
 
