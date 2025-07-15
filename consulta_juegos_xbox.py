@@ -267,6 +267,10 @@ class XboxGameLookupApp(ctk.CTk):
         self.boton_buscar.configure(text=self.traducir("buscar"))
         self.switch.configure(text=self.traducir("modo_oscuro"))
         self.idioma_menu_label.configure(text=f"🌐 {self.traducir('idioma')}:")
+        
+        # ✅ Actualizar labels de secciones
+        self.label_title.configure(text=self.traducir("title_ids"))
+        self.label_releases.configure(text=self.traducir("releases"))
 
         # Actualizar encabezados de Treeview
         self.tree_title_ids.heading("title_id", text=self.traducir("col_title_id"))
@@ -278,21 +282,18 @@ class XboxGameLookupApp(ctk.CTk):
         self.tree_releases.heading("system", text=self.traducir("col_system"))
 
         # Recrear los menús contextuales para que sus etiquetas se actualicen
-        # Asegurarse de que los treeviews ya existan antes de intentar crear menús para ellos
         if hasattr(self, 'tree_title_ids'):
             self.menu_title = self._crear_menu_contextual(self.tree_title_ids)
-            # Re-vincular el menú contextual ya que se ha recreado
             self.tree_title_ids.bind("<Button-3>", lambda e: self._mostrar_menu_contextual(e, self.tree_title_ids, self.menu_title))
 
         if hasattr(self, 'tree_releases'):
             self.menu_release = self._crear_menu_contextual(self.tree_releases)
-            # Re-vincular el menú contextual
             self.tree_releases.bind("<Button-3>", lambda e: self._mostrar_menu_contextual(e, self.tree_releases, self.menu_release))
 
         # Actualizar el texto del label de estado si no es un mensaje transitorio
         current_status_text = self.status_label.cget("text")
         if current_status_text not in [self.traducir("cargando"), self.traducir("busqueda_completada"), self.traducir("no_results_found"), self.traducir("error_busqueda")]:
-             self.status_label.configure(text="") # Limpiar si no es un estado transitorio
+            self.status_label.configure(text="")  # Limpiar si no es un estado transitorio
 
     def _cambiar_idioma(self, val):
         self.idioma_actual = {'Español': 'es', 'English': 'en', 'Português': 'pt'}[val]
