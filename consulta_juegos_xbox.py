@@ -8,6 +8,26 @@ import locale
 import json
 import os
 import sys
+HAVE_WIN32_SHELL = False
+WIN32_SHELL_IMPORT_ERROR = None
+
+if sys.platform.startswith("win"):
+    try:
+        # Import correcto (no basta "import win32com")
+        from win32com.shell import shell as _SHELL, shellcon as _SHELLCON
+        HAVE_WIN32_SHELL = True
+    except Exception as _e:
+        WIN32_SHELL_IMPORT_ERROR = _e
+
+# (Opcional, ayuda a PyInstaller cuando está empacado)
+if getattr(sys, "frozen", False) and sys.platform.startswith("win"):
+    try:
+        import win32com  # noqa
+        from win32com.shell import shell as _SHELL, shellcon as _SHELLCON  # noqa
+        import pythoncom, pywintypes  # noqa
+        HAVE_WIN32_SHELL = True
+    except Exception as _e:
+        WIN32_SHELL_IMPORT_ERROR = _e
 import subprocess
 import unicodedata
 from pathlib import Path
@@ -15,6 +35,7 @@ import shutil
 import threading
 import time
 from datetime import datetime
+
 
 # -------------------- Config --------------------
 CONFIG_FILE = Path.home() / ".consulta_juegos_xbox_config.json"
@@ -91,6 +112,11 @@ traducciones = {
         "marcados": "Marcados",
         # Archivo actual
         "archivo": "Archivo",
+        # Método de copia
+        "metodo_copia": "Método de copia",
+        "auto_explorer": "Auto (Explorer si hay)",
+        "explorer_forzar": "Explorer (forzar)",
+        "interno": "Interno (propio)",
     },
     "en": {
         "modo_oscuro": "Dark Mode",
@@ -126,7 +152,6 @@ traducciones = {
         "ok": "OK",
         "cancelar": "Cancel",
         "copia_cancelada": "Copy canceled.",
-        # Explorer
         "explorador": "File explorer",
         "ruta": "Path:",
         "abrir_explorer": "Open in Explorer",
@@ -141,25 +166,24 @@ traducciones = {
         "modificado": "Modified",
         "mostrar_en_explorer": "Show in Explorer",
         "abrir": "Open",
-        # Filter
         "filtro_placeholder": "Filter by name, type or path…",
         "aplicar_filtro": "Search",
         "limpiar_filtro": "Clear",
-        # Nav
         "atras": "Back",
         "adelante": "Forward",
         "calculando": "Calculating…",
-        # Checkboxes
         "col_sel": "✔",
         "marcar_visibles": "Check visible",
         "desmarcar_visibles": "Uncheck visible",
         "ninguno_marcado": "No items checked.",
         "minimizar": "Minimize",
-        # Counter
         "seleccionados": "Selected",
         "marcados": "Checked",
-        # Current file
         "archivo": "File",
+        "metodo_copia": "Copy method",
+        "auto_explorer": "Auto (Explorer if available)",
+        "explorer_forzar": "Explorer (force)",
+        "interno": "Internal (built-in)",
     },
     "pt": {
         "modo_oscuro": "Modo Escuro",
@@ -195,7 +219,6 @@ traducciones = {
         "ok": "OK",
         "cancelar": "Cancelar",
         "copia_cancelada": "Cópia cancelada.",
-        # Explorer
         "explorador": "Explorador de arquivos",
         "ruta": "Caminho:",
         "abrir_explorer": "Abrir no Explorer",
@@ -210,25 +233,24 @@ traducciones = {
         "modificado": "Modificado",
         "mostrar_en_explorer": "Mostrar no Explorer",
         "abrir": "Abrir",
-        # Filter
         "filtro_placeholder": "Filtrar por nome, tipo ou caminho…",
         "aplicar_filtro": "Buscar",
         "limpiar_filtro": "Limpar",
-        # Nav
         "atras": "Voltar",
         "adelante": "Avançar",
         "calculando": "Calculando…",
-        # Checkboxes
         "col_sel": "✔",
         "marcar_visibles": "Marcar visíveis",
         "desmarcar_visibles": "Desmarcar visíveis",
         "ninguno_marcado": "Nenhum item marcado.",
         "minimizar": "Minimizar",
-        # Counter
         "seleccionados": "Selecionados",
         "marcados": "Marcados",
-        # Current file
         "archivo": "Arquivo",
+        "metodo_copia": "Método de cópia",
+        "auto_explorer": "Auto (Explorer se houver)",
+        "explorer_forzar": "Explorer (forçar)",
+        "interno": "Interno",
     }
 }
 
@@ -339,11 +361,12 @@ class XboxGameLookupApp(ctk.CTk):
             except Exception: pass
 
         self.title("SVXboxGamesFinder (Local) - By: @erickmacielsoto - Reviewed by: @jasontorresb")
-        self.geometry("1160x860")
+        self.geometry("1200x880")
 
         # Preferencias
         self.idioma_actual = self._detectar_idioma_sistema()
         self.modo_oscuro_inicial = self._detectar_modo_oscuro_sistema()
+        self.copy_method = "explorer"  # "auto" | "explorer" | "internal"
         self._cargar_config()
         self._aplicar_estilo_treeview("dark" if self.modo_oscuro_inicial else "light")
         ctk.set_appearance_mode("dark" if self.modo_oscuro_inicial else "light")
@@ -383,6 +406,7 @@ class XboxGameLookupApp(ctk.CTk):
             "idioma": self.idioma_actual,
             "modo_oscuro": self.switch_var.get(),
             "scan_roots": getattr(self, "_scan_roots", []),
+            "copy_method": self.copy_method,
         }
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -398,6 +422,8 @@ class XboxGameLookupApp(ctk.CTk):
                 if config.get("idioma") in traducciones: self.idioma_actual = config["idioma"]
                 if config.get("modo_oscuro") is not None: self.modo_oscuro_inicial = config["modo_oscuro"]
                 self._scan_roots = config.get("scan_roots", [])
+                if config.get("copy_method") in ("auto","explorer","internal"):
+                    self.copy_method = config["copy_method"]
             except Exception as e:
                 messagebox.showwarning(self.traducir("info"), f"Error al cargar configuración, usando valores predeterminados: {e}")
 
@@ -529,6 +555,18 @@ class XboxGameLookupApp(ctk.CTk):
         self.selector_idioma.set({"es":"Español","en":"English","pt":"Português"}.get(self.idioma_actual,"Español"))
 
         right = ctk.CTkFrame(frame_top, fg_color="transparent"); right.pack(side="right")
+        # Selector de método de copia
+        ctk.CTkLabel(right, text=f"🚚 {self.traducir('metodo_copia')}:").pack(side="left", padx=(0,6))
+        self.copy_method_var = ctk.StringVar(value=self.copy_method)
+        self.copy_method_menu = ctk.CTkOptionMenu(
+            right,
+            values=[ "auto", "explorer", "internal" ],
+            variable=self.copy_method_var,
+            command=self._on_change_copy_method,
+            width=140
+        )
+        self.copy_method_menu.pack(side="left", padx=(0,12))
+
         self.btn_limpiar = ctk.CTkButton(right, text=self.traducir("limpiar_db"), command=self._limpiar_db)
         self.btn_limpiar.pack(side="right", padx=(6, 10))
         self.btn_cargar = ctk.CTkButton(right, text=self.traducir("cargar_json"), command=self._cargar_json)
@@ -537,7 +575,7 @@ class XboxGameLookupApp(ctk.CTk):
         self.btn_add_root.pack(side="right")
 
         self.label_entrada = ctk.CTkLabel(self, text=self.traducir("ingresa_texto")); self.label_entrada.pack(pady=(10, 0))
-        self.entry = ctk.CTkEntry(self, placeholder_text="Ej: 4D530AA4 o Forza Horizon", width=760)
+        self.entry = ctk.CTkEntry(self, placeholder_text="Ej: 4D530AA4 o Forza Horizon", width=780)
         self.entry.pack(pady=5); self.entry.bind("<Return>", self._buscar_todo)
         self.boton_buscar = ctk.CTkButton(self, text=self.traducir("buscar"), command=self._buscar_todo); self.boton_buscar.pack(pady=8)
 
@@ -641,6 +679,9 @@ class XboxGameLookupApp(ctk.CTk):
         self.boton_buscar.configure(text=self.traducir("buscar"))
         self.switch.configure(text=self.traducir("modo_oscuro"))
         self.idioma_menu_label.configure(text=f"🌐 {self.traducir('idioma')}:")
+        # etiquetas del método de copia (mostrar texto amistoso en tooltip rápido)
+        method = self.copy_method_var.get()
+        self.copy_method_menu.configure(values=["auto","explorer","internal"])
         self.btn_cargar.configure(text=self.traducir("cargar_json"))
         self.btn_limpiar.configure(text=self.traducir("limpiar_db"))
         self.btn_add_root.configure(text=self.traducir("agregar_carpeta"))
@@ -665,6 +706,11 @@ class XboxGameLookupApp(ctk.CTk):
         self.tree_files.heading("modified", text=self.traducir("modificado"))
         # refrescar contador
         self._update_counts()
+
+    def _on_change_copy_method(self, value):
+        # value: "auto" | "explorer" | "internal"
+        self.copy_method = value
+        self._guardar_config()
 
     def _cambiar_idioma(self, val):
         self.idioma_actual = {'Español':'es','English':'en','Português':'pt'}[val]
@@ -774,7 +820,7 @@ class XboxGameLookupApp(ctk.CTk):
         if not src: return
         dst_root = filedialog.askdirectory(title=self.traducir("elige_destino"))
         if not dst_root: return
-        self._copy_items_with_progress_internal([src], dest_base=dst_root, keep_names=True, include_top_dir=True)
+        self._copy_items_with_progress([src], dest_base=dst_root, keep_names=True, include_top_dir=True)
 
     def _choose_path_dialog(self, paths, title=None):
         if not paths: return None
@@ -1040,7 +1086,7 @@ class XboxGameLookupApp(ctk.CTk):
         dst_root = filedialog.askdirectory(title=self.traducir("elige_destino"))
         if not dst_root:
             return
-        self._copy_items_with_progress_internal(paths, dest_base=dst_root, keep_names=True, include_top_dir=True)
+        self._copy_items_with_progress(paths, dest_base=dst_root, keep_names=True, include_top_dir=True)
 
     def _copy_checked_items_from_browser(self):
         if not self._checked_paths:
@@ -1048,14 +1094,10 @@ class XboxGameLookupApp(ctk.CTk):
         dst_root = filedialog.askdirectory(title=self.traducir("elige_destino"))
         if not dst_root: return
         items = list(self._checked_paths)
-        self._copy_items_with_progress_internal(items, dest_base=dst_root, keep_names=True, include_top_dir=True)
+        self._copy_items_with_progress(items, dest_base=dst_root, keep_names=True, include_top_dir=True)
 
+    # ---- Implementación interna (tu diálogo de progreso propio)
     def _copy_items_with_progress_internal(self, sources, dest_base, keep_names=True, include_top_dir=True):
-        """
-        Copia archivos o carpetas.
-        - keep_names: si True mantiene nombres relativos.
-        - include_top_dir: si es carpeta y True, crea también la carpeta contenedora en destino.
-        """
         file_list = []
         for src in sources:
             if os.path.isdir(src):
@@ -1065,7 +1107,7 @@ class XboxGameLookupApp(ctk.CTk):
                         fpath = os.path.join(root, name)
                         try: size = os.path.getsize(fpath)
                         except OSError: size = 0
-                        rel_inside = os.path.relpath(fpath, src)  # relativo a la carpeta
+                        rel_inside = os.path.relpath(fpath, src)
                         rel = os.path.join(base, rel_inside) if keep_names else os.path.relpath(fpath, os.path.dirname(src))
                         file_list.append((fpath, rel, size))
             else:
@@ -1077,7 +1119,6 @@ class XboxGameLookupApp(ctk.CTk):
         total_bytes = sum(sz for _, _, sz in file_list)
         os.makedirs(dest_base, exist_ok=True)
 
-        # --- Ventana de progreso (no modal y minimizable) ---
         dlg = ctk.CTkToplevel(self)
         dlg.title(self.traducir("copiando"))
         dlg.geometry("600x240")
@@ -1086,7 +1127,6 @@ class XboxGameLookupApp(ctk.CTk):
         title_lbl = ctk.CTkLabel(dlg, text=f"{self.traducir('copiando')}...")
         title_lbl.pack(pady=(12, 6))
 
-        # Archivo actual
         file_lbl = ctk.CTkLabel(dlg, text=f"{self.traducir('archivo')}: —", wraplength=560, justify="left")
         file_lbl.pack(padx=16)
 
@@ -1097,17 +1137,14 @@ class XboxGameLookupApp(ctk.CTk):
         detail_lbl = ctk.CTkLabel(dlg, text="0%")
         detail_lbl.pack(pady=(0, 6))
 
-        # Botonera: Minimizar + Cancelar
         btns = ctk.CTkFrame(dlg, fg_color="transparent")
         btns.pack(pady=(4, 10))
 
         stop_event = threading.Event()
 
         def _minimize():
-            try:
-                dlg.iconify()
-            except Exception:
-                pass
+            try: dlg.iconify()
+            except Exception: pass
 
         btn_min = ctk.CTkButton(btns, text=self.traducir("minimizar"), width=120, command=_minimize)
         btn_min.pack(side="left", padx=6)
@@ -1124,7 +1161,7 @@ class XboxGameLookupApp(ctk.CTk):
                     if stop_event.is_set():
                         state["canceled"]=True
                         break
-                    state["current_rel"] = rel  # ← archivo actual
+                    state["current_rel"] = rel
                     destfile = os.path.join(dest_base, rel)
                     os.makedirs(os.path.dirname(destfile), exist_ok=True)
                     try: shutil.copy2(srcfile, destfile)
@@ -1143,9 +1180,7 @@ class XboxGameLookupApp(ctk.CTk):
         threading.Thread(target=worker, daemon=True).start()
 
         def tick():
-            # actualizar archivo actual
             file_lbl.configure(text=f"{self.traducir('archivo')}: {state['current_rel']}")
-
             frac = max(0.0, min(1.0, (state["copied"]/total_bytes) if total_bytes>0 else 0.0))
             pbar.set(frac)
             percent = int(frac*100)
@@ -1173,84 +1208,166 @@ class XboxGameLookupApp(ctk.CTk):
 
         tick()
 
-        # --- NUEVO: usar el motor del Explorador de Windows ---
+    # --- Explorer (diálogo nativo de Windows)
     def _copy_with_explorer(self, sources, dest_base, include_top_dir=True):
         """
-        Lanza la copia con el diálogo nativo de Windows (Explorer).
-        Requiere: pywin32 instalado.
+        Copia con el diálogo nativo del Explorador (SHFileOperation).
+        Importa localmente win32com.shell y muestra cualquier error real.
         """
-        import threading, os
-        from win32com.shell import shell, shellcon
+        import threading, ctypes, os
+        from ctypes import wintypes
+
+        # Import aquí (mismo intérprete que corre la GUI)
+        try:
+            from win32com.shell import shell, shellcon
+        except Exception as e:
+            import sys as _sys
+            messagebox.showerror(
+                self.traducir("error"),
+                "No se pudo importar 'win32com.shell'.\n"
+                f"Detalle: {e}\n\nPython actual:\n{_sys.executable}\n\n"
+                "Solución:\npython -m pip install pywin32\npython -m pywin32_postinstall install"
+            )
+            return
 
         os.makedirs(dest_base, exist_ok=True)
 
-        # Si NO quieres llevar la carpeta contenedora, sino sólo su contenido,
-        # para esas rutas usa "carpeta\\*" (patrón de contenido)
+        # Normaliza rutas y arma el multistring \0..\0\0
         srcs = []
         for s in sources:
+            s = os.path.abspath(s)
             if os.path.isdir(s) and not include_top_dir:
-                srcs.append(os.path.join(s, "*"))
+                srcs.append(os.path.join(s, "*"))   # solo contenido
             else:
-                srcs.append(s)
+                srcs.append(s)                       # carpeta/archivo tal cual
 
-        # SHFileOperation espera cadenas separadas con '\0' y terminadas en '\0\0'
         from_str = "\0".join(srcs) + "\0\0"
-        to_str   = dest_base + "\0"
+        to_str   = os.path.abspath(dest_base) + "\0"
+
+        # HWND de la ventana (si falla, usa 0 y funciona igual)
+        try:
+            GetHWND = ctypes.windll.user32.FindWindowW
+            GetHWND.restype = wintypes.HWND
+            hwnd = GetHWND(None, self.title())
+        except Exception:
+            hwnd = 0
 
         def run():
             try:
-                # Flags: sin confirmación para crear carpetas; deja visible el diálogo
-                flags = shellcon.FOF_NOCONFIRMMKDIR
-                res, aborted = shell.SHFileOperation((
-                    0,                      # hwnd
-                    shellcon.FO_COPY,       # operación
-                    from_str,               # desde (multi)
-                    to_str,                 # destino
-                    flags,
-                    None, None
-                ))
-                # res==0 => OK. aborted True => usuario canceló en el diálogo.
+                flags = shellcon.FOF_NOCONFIRMMKDIR  # muestra UI de progreso de Windows
+                res, aborted = shell.SHFileOperation((hwnd, shellcon.FO_COPY, from_str, to_str, flags, None, None))
                 if aborted:
+                    self.after(0, lambda: self.status_label.configure(text=self.traducir("copia_cancelada"), text_color="orange"))
+                elif res == 0:
+                    self.after(0, lambda: self.status_label.configure(text=self.traducir("copia_completada"), text_color="green"))
+                else:
+                    self.after(0, lambda: messagebox.showerror(self.traducir("error"),
+                        f"{self.traducir('error_copiar')}\nCódigo Shell: {res}"))
+            except Exception as e:
+                self.after(0, lambda: messagebox.showerror(self.traducir("error"),
+                    f"{self.traducir('error_copiar')}\n{e!r}"))
+
+        threading.Thread(target=run, daemon=True).start()
+        self.status_label.configure(text=self.traducir("copiando"), text_color="orange")
+
+
+    # --- Wrapper: elige Explorer / Interno según preferencia y disponibilidad
+    def _copy_items_with_progress(self, sources, dest_base, keep_names=True, include_top_dir=True):
+        """
+        Copia usando el motor del Explorador (SHFileOperation) vía ctypes.
+        No requiere pywin32. Muestra el diálogo nativo de Windows.
+        """
+        import os, sys
+        if not sources:
+            messagebox.showinfo(self.traducir("info"), self.traducir("ninguno_marcado"))
+            return
+        if not sys.platform.startswith("win"):
+            messagebox.showerror(self.traducir("error"), "Esta copia solo está disponible en Windows.")
+            return
+
+        # Normaliza rutas y asegura carpeta destino
+        os.makedirs(dest_base, exist_ok=True)
+        srcs = []
+        for s in sources:
+            s = os.path.abspath(s)
+            if os.path.isdir(s) and not include_top_dir:
+                srcs.append(os.path.join(s, "*"))   # copiar solo contenido
+            else:
+                srcs.append(s)                       # copiar carpeta/archivo tal cual
+
+        # Llama a SHFileOperation
+        return self._copy_with_explorer_ctypes(srcs, dest_base)
+
+
+    def _copy_with_explorer_ctypes(self, src_list, dest_dir):
+        """
+        Implementación de SHFileOperationW (FO_COPY) con ctypes.
+        Muestra UI de progreso del Explorador. Devuelve inmediatamente (hilo).
+        """
+        import os, threading, ctypes
+        from ctypes import wintypes
+
+        # Estructuras/constantes de shell32
+        FO_COPY = 0x0002
+        FOF_NOCONFIRMMKDIR = 0x0200  # crea carpetas sin preguntar (deja UI de progreso)
+        # (si quieres evitar confirmaciones de overwrite, añade FOF_NOCONFIRMATION = 0x0010)
+
+        class SHFILEOPSTRUCTW(ctypes.Structure):
+            _fields_ = [
+                ('hwnd', wintypes.HWND),
+                ('wFunc', wintypes.UINT),
+                ('pFrom', wintypes.LPCWSTR),
+                ('pTo',   wintypes.LPCWSTR),
+                ('fFlags', wintypes.USHORT),
+                ('fAnyOperationsAborted', wintypes.BOOL),
+                ('hNameMappings', wintypes.LPVOID),
+                ('lpszProgressTitle', wintypes.LPCWSTR),
+            ]
+
+        shell32 = ctypes.windll.shell32
+
+        # multistring (cada ruta terminada en '\0', y doble '\0' al final)
+        from_str = "\0".join(os.path.abspath(p) for p in src_list) + "\0\0"
+        to_str   = os.path.abspath(dest_dir) + "\0"
+
+        # intenta obtener HWND de la ventana principal; si falla, 0 (funciona igual)
+        try:
+            hwnd = ctypes.windll.user32.FindWindowW(None, self.title())
+        except Exception:
+            hwnd = 0
+
+        def run():
+            try:
+                op = SHFILEOPSTRUCTW()
+                op.hwnd = hwnd
+                op.wFunc = FO_COPY
+                op.pFrom = from_str
+                op.pTo   = to_str
+                op.fFlags = FOF_NOCONFIRMMKDIR
+                op.fAnyOperationsAborted = False
+                op.hNameMappings = None
+                op.lpszProgressTitle = None
+
+                res = shell32.SHFileOperationW(ctypes.byref(op))
+                if op.fAnyOperationsAborted:
                     self.after(0, lambda: self.status_label.configure(
                         text=self.traducir("copia_cancelada"), text_color="orange"))
                 elif res == 0:
                     self.after(0, lambda: self.status_label.configure(
                         text=self.traducir("copia_completada"), text_color="green"))
                 else:
-                    self.after(0, lambda: self.status_label.configure(
-                        text=self.traducir("error_copiar"), text_color="red"))
+                    # Código de error del shell (no es excepción Python)
+                    self.after(0, lambda: messagebox.showerror(
+                        self.traducir("error"),
+                        f"{self.traducir('error_copiar')}\nCódigo Shell: {res}"))
             except Exception as e:
                 self.after(0, lambda: messagebox.showerror(
                     self.traducir("error"),
-                    f"{self.traducir('error_copiar')}\n{e}"
-                ))
+                    f"{self.traducir('error_copiar')}\n{e!r}"))
 
-        # Lanza en hilo para no congelar la UI propia (el diálogo del sistema queda aparte)
         threading.Thread(target=run, daemon=True).start()
         self.status_label.configure(text=self.traducir("copiando"), text_color="orange")
 
-
-    # --- NUEVO: wrapper que intenta Explorer y luego hace fallback a tu copia actual ---
-    def _copy_items_with_progress(self, sources, dest_base, keep_names=True, include_top_dir=True):
-        """
-        Wrapper: usa Explorer si está disponible; si no, cae a la implementación interna
-        (tu función anterior renombrada a _copy_items_with_progress_internal).
-        """
-        try:
-            if sys.platform.startswith("win"):
-                # ¿Hay pywin32 para usar el motor del Explorer?
-                import win32com  # noqa: F401 (solo para comprobar disponibilidad)
-                return self._copy_with_explorer(
-                    sources, dest_base, include_top_dir=include_top_dir
-                )
-        except Exception as _e:
-            # Si algo falla, seguimos con el método interno
-            pass
-
-        # Fallback: tu diálogo personalizado y copia Python (la función que ya tenías)
-        return self._copy_items_with_progress_internal(
-            sources, dest_base, keep_names=keep_names, include_top_dir=include_top_dir
-        )
 
 
 # -------------------- main --------------------
