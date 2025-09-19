@@ -40,7 +40,7 @@ from datetime import datetime
 # -------------------- Config --------------------
 CONFIG_FILE = Path.home() / ".consulta_juegos_xbox_config.json"
 ctk.set_default_color_theme("blue")
-DEFAULT_JSON_GLOBS = ["*.json"]  # json(s) locales que se cargan automáticamente
+DEFAULT_JSON_GLOBS = ["bd/*.json"]  # json(s) locales que se cargan automáticamente
 
 # -------------------- Traducciones --------------------
 traducciones = {
@@ -322,10 +322,14 @@ def load_json_file(path: str):
 
 def load_default_jsons():
     here = os.getcwd()
+    bd_path = Path(here) / "bd"
+    if not bd_path.is_dir():
+        print("No se encontró la carpeta 'bd'. Los JSON no se cargarán automáticamente.")
+        return
+
     for pat in DEFAULT_JSON_GLOBS:
-        for fname in sorted(Path(here).glob(pat)):
+        for fname in sorted(bd_path.glob(pat)):
             absf = os.path.abspath(str(fname))
-            if os.path.basename(absf) == os.path.basename(CONFIG_FILE): continue
             if absf in _loaded_files: continue
             try: load_json_file(absf)
             except Exception: pass
@@ -371,7 +375,11 @@ class XboxGameLookupApp(ctk.CTk):
         self._aplicar_estilo_treeview("dark" if self.modo_oscuro_inicial else "light")
         ctk.set_appearance_mode("dark" if self.modo_oscuro_inicial else "light")
 
-        # Datos
+        # UI
+        self._setup_ui()
+        self._update_ui_texts()
+        
+        # Datos (Ahora se cargan después de la interfaz)
         load_default_jsons()
         if hasattr(self, "_scan_roots"):
             for r in list(self._scan_roots):
@@ -380,9 +388,6 @@ class XboxGameLookupApp(ctk.CTk):
                     try: self._scan_roots.remove(r)
                     except ValueError: pass
 
-        # UI
-        self._setup_ui()
-        self._update_ui_texts()
         self._update_db_summary()
 
         # Navegación + tamaños + checks
@@ -394,7 +399,7 @@ class XboxGameLookupApp(ctk.CTk):
         self._files_row_by_path = {}
         self._current_entries = []
         self._filter_job = None
-        self._checked_paths = set()  # ← rutas marcadas (checkboxes)
+        self._checked_paths = set()
 
         self._update_nav_buttons()
 
@@ -639,6 +644,10 @@ class XboxGameLookupApp(ctk.CTk):
         self.btn_filter.pack(side="left", padx=(0,6))
         self.btn_filter_clear = ctk.CTkButton(filter_bar, text=self.traducir("limpiar_filtro"), width=90, command=self._clear_files_filter)
         self.btn_filter_clear.pack(side="left")
+        self.btn_cargar_lista = ctk.CTkButton(right, text="Cargar lista", command=self._cargar_lista)
+        self.btn_cargar_lista.pack(side="right", padx=(6, 6))
+        self.btn_paste_list = ctk.CTkButton(right, text="Pegar lista", command=self._pegar_lista_dialog)
+        self.btn_paste_list.pack(side="right", padx=(6, 6))
 
         # Tabla de archivos (con columna de check)
         wrap_files = ctk.CTkFrame(self.frame_explorer, fg_color="transparent"); wrap_files.pack(fill="both", expand=True)
@@ -779,15 +788,41 @@ class XboxGameLookupApp(ctk.CTk):
         self.status_label.configure(text=self.traducir("carpeta_indexada"), text_color="green")
 
     def _scan_root(self, root):
-        if not hasattr(self, "_paths_by_tid"): self._paths_by_tid = {}
-        for dirpath, dirnames, _ in os.walk(root):
+        if not hasattr(self, "_paths_by_tid"):
+            self._paths_by_tid = {}
+        if not hasattr(self, "_paths_by_name"):
+            self._paths_by_name = {}
+
+        # Primera pasada: indexar por Title ID
+        for dirpath, _, dirnames in os.walk(root):
             base = os.path.basename(dirpath)
             m = re.search(r'([0-9A-Fa-f]{8})', base)
             if m:
-                tid = m.group(1).upper(); self._paths_by_tid.setdefault(tid, set()).add(dirpath)
-            for d in list(dirnames):
+                tid = m.group(1).upper()
+                self._paths_by_tid.setdefault(tid, set()).add(dirpath)
+            
+            for d in dirnames:
                 if re.fullmatch(r'[0-9A-Fa-f]{8}', d):
-                    tid = d.upper(); self._paths_by_tid.setdefault(tid, set()).add(os.path.join(dirpath, d))
+                    tid = d.upper()
+                    self._paths_by_tid.setdefault(tid, set()).add(os.path.join(dirpath, d))
+
+        # Segunda pasada: indexar por nombre de juego para una mejor búsqueda
+        for it in _items_by_key.values():
+            tid = it["title_id"]
+            norm_name = norm_text(it["name"])
+            
+            # Buscar en las carpetas indexadas por TID para añadir también el nombre
+            if tid in self._paths_by_tid:
+                for path in self._paths_by_tid[tid]:
+                    self._paths_by_name.setdefault(norm_name, set()).add(path)
+            
+            # Buscar en el árbol de directorios para una coincidencia con el nombre
+            for dirpath, _, _ in os.walk(root):
+                norm_dir_name = norm_text(os.path.basename(dirpath))
+                if norm_name == norm_dir_name or norm_name in norm_dir_name:
+                    self._paths_by_name.setdefault(norm_name, set()).add(dirpath)
+
+        self._update_db_summary()
 
     def _find_paths_for_tid(self, tid_hex):
         if not hasattr(self, "_paths_by_tid"): return []
@@ -1369,6 +1404,138 @@ class XboxGameLookupApp(ctk.CTk):
         self.status_label.configure(text=self.traducir("copiando"), text_color="orange")
 
 
+    def _pegar_lista_dialog(self):
+        """
+        Abre una ventana emergente para que el usuario pegue una lista de juegos.
+        """
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Pegar lista de juegos")
+        dlg.geometry("600x400")
+        dlg.grab_set()
+
+        ctk.CTkLabel(dlg, text="Pega tu lista de juegos separada por comas:").pack(pady=10)
+        
+        textbox = ctk.CTkTextbox(dlg, width=580, height=280)
+        textbox.pack(padx=10, pady=(0, 10))
+
+        def on_paste_and_go():
+            content = textbox.get("1.0", ctk.END).strip()
+            dlg.destroy()
+            if content:
+                self._process_game_list(content)
+
+        def on_cancel():
+            dlg.destroy()
+
+        btn_frame = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_frame.pack(pady=(0, 10))
+        ctk.CTkButton(btn_frame, text="Aceptar", command=on_paste_and_go).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="Cancelar", command=on_cancel).pack(side="left", padx=5)
+
+        dlg.wait_window()
+
+    def _show_missing_games_dialog(self, missing_games: list[str]):
+        """
+        Muestra una ventana con la lista de juegos que no se encontraron, con conteo.
+        """
+        dlg = ctk.CTkToplevel(self)
+        dlg.title(f"Juegos faltantes ({len(missing_games)})")
+        dlg.geometry("500x400")
+        dlg.grab_set()
+
+        ctk.CTkLabel(dlg, text=f"Se encontraron {len(missing_games)} juegos faltantes:").pack(pady=10)
+        
+        textbox = ctk.CTkTextbox(dlg, width=480, height=280)
+        textbox.pack(padx=10, pady=(0, 10))
+        
+        missing_list_str = "\n".join(missing_games)
+        textbox.insert("1.0", missing_list_str)
+        textbox.configure(state="disabled")
+        
+        def on_close():
+            dlg.destroy()
+
+        ctk.CTkButton(dlg, text="Cerrar", command=on_close).pack(pady=(0, 10))
+        dlg.wait_window()
+
+    def _process_game_list(self, list_content: str):
+        """
+        Procesa una lista de juegos, los marca y muestra el resumen.
+        """
+        self.status_label.configure(text="Procesando lista...", text_color="orange")
+        self.update_idletasks()
+
+        found_paths = set()
+        total_games = 0
+        missing_games = []
+        
+        try:
+            game_names = [name.strip() for name in list_content.replace('\n', ',').split(',') if name.strip()]
+            total_games = len(game_names)
+            
+            for name in game_names:
+                norm_n = norm_text(name)
+                matching_ids = {it["title_id"] for nname, it in _index_name if norm_n in nname}
+                
+                paths_found_for_name = set()
+                for tid in matching_ids:
+                    paths = self._find_paths_for_tid(tid)
+                    paths_found_for_name.update(paths)
+                
+                if norm_n in getattr(self, "_paths_by_name", {}):
+                    paths_found_for_name.update(self._paths_by_name[norm_n])
+
+                if paths_found_for_name:
+                    found_paths.update(paths_found_for_name)
+                else:
+                    missing_games.append(name)
+
+        except Exception as e:
+            messagebox.showerror(self.traducir("error"), f"Error al procesar la lista:\n{e}")
+            self.status_label.configure(text=self.traducir("error"), text_color="red")
+            return
+
+        # 1. Limpia las marcas previas y añade las nuevas
+        self._checked_paths.clear()
+        for p in found_paths:
+            self._checked_paths.add(p)
+        
+        self._render_files(getattr(self, "_current_entries", []) or [])
+
+        # 2. Navega al primer directorio raíz para mostrar los resultados
+        # Esto es crucial para que se refresque la vista
+        if getattr(self, "_scan_roots", []):
+            self._enter_folder(self._scan_roots[0])
+        elif found_paths:
+             self._enter_folder(os.path.dirname(os.path.dirname(next(iter(found_paths)))))
+
+        # 3. Muestra el mensaje de estado
+        self.status_label.configure(
+            text=f"Procesados {total_games} juegos. Se encontraron {len(found_paths)} carpetas.", 
+            text_color="green"
+        )
+        self._update_counts()
+
+        # 4. Muestra la ventana de juegos faltantes si los hay
+        if missing_games:
+            self.after(50, lambda: self._show_missing_games_dialog(missing_games))
+
+
+    # Esta es la versión actualizada de _cargar_lista para que use la nueva función de procesamiento
+    def _cargar_lista(self):
+        file_path = filedialog.askopenfilename(
+            title="Selecciona archivo de lista",
+            filetypes=[("Archivos de texto", "*.txt"), ("Todos los archivos", "*.*")]
+        )
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                list_content = f.read()
+                self._process_game_list(list_content)
+        except Exception as e:
+            messagebox.showerror(self.traducir("error"), f"Error al leer el archivo:\n{e}")
 
 # -------------------- main --------------------
 if __name__ == "__main__":
