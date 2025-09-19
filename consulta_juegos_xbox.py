@@ -298,6 +298,13 @@ _items_by_key: dict[tuple, dict] = {}
 _index_tid: dict[str, list[dict]] = {}
 _index_name: list[tuple[str, dict]] = []
 
+def _app_root() -> str:
+    # Directorio del programa (EXE o .py)
+    if getattr(sys, "frozen", False):
+        # PyInstaller
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
 def clear_db():
     _loaded_files.clear(); _items_by_key.clear(); _index_tid.clear(); _index_name.clear()
 
@@ -321,18 +328,22 @@ def load_json_file(path: str):
     _loaded_files.append(os.path.abspath(path))
 
 def load_default_jsons():
-    here = os.getcwd()
-    bd_path = Path(here) / "bd"
+    base = Path(_app_root())
+    bd_path = base / "bd"
     if not bd_path.is_dir():
-        print("No se encontró la carpeta 'bd'. Los JSON no se cargarán automáticamente.")
+        print(f"No se encontró la carpeta 'bd' en: {bd_path}")
         return
 
     for pat in DEFAULT_JSON_GLOBS:
         for fname in sorted(bd_path.glob(pat)):
             absf = os.path.abspath(str(fname))
-            if absf in _loaded_files: continue
-            try: load_json_file(absf)
-            except Exception: pass
+            if absf in _loaded_files:
+                continue
+            try:
+                load_json_file(absf)
+            except Exception as e:
+                print(f"Error cargando {absf}: {e}")
+
 
 def summarize_by_system() -> str:
     counts: dict[str, int] = {}
@@ -1108,27 +1119,53 @@ class XboxGameLookupApp(ctk.CTk):
 
     # ---------- Copias ----------
     def _copy_selected_rows_browser(self):
-        """Copia las filas seleccionadas (resaltadas) del explorador."""
-        sels = self.tree_files.selection()
-        if not sels:
+        """
+        Copia lo que esté seleccionado en la tabla de archivos (self.tree_files).
+        Filtra rutas inexistentes antes de invocar el copiador.
+        """
+        rows = self.tree_files.selection()
+        if not rows:
             messagebox.showinfo(self.traducir("info"), self.traducir("ninguno_marcado"))
             return
-        paths = []
-        for sid in sels:
-            vals = self.tree_files.item(sid, "values")
-            if vals:
-                paths.append(vals[-1])  # columna 'path'
+
+        items = []
+        for row in rows:
+            vals = self.tree_files.item(row, "values")
+            if not vals:
+                continue
+            # La última columna ('path') es la ruta absoluta
+            path = vals[-1]
+            if path and os.path.exists(path):
+                items.append(path)
+
+        if not items:
+            messagebox.showinfo(self.traducir("info"), self.traducir("ninguno_marcado"))
+            return
+
         dst_root = filedialog.askdirectory(title=self.traducir("elige_destino"))
         if not dst_root:
             return
-        self._copy_items_with_progress(paths, dest_base=dst_root, keep_names=True, include_top_dir=True)
+
+        self._copy_items_with_progress(items, dest_base=dst_root, keep_names=True, include_top_dir=True)
 
     def _copy_checked_items_from_browser(self):
+        """
+        Copia TODO lo marcado (aunque no esté visible) usando el copiador nativo.
+        Filtra rutas inexistentes antes de invocar el copiador.
+        """
         if not self._checked_paths:
-            messagebox.showinfo(self.traducir("info"), self.traducir("ninguno_marcado")); return
+            messagebox.showinfo(self.traducir("info"), self.traducir("ninguno_marcado"))
+            return
+
+        items = [p for p in self._checked_paths if os.path.exists(p)]
+        if not items:
+            messagebox.showinfo(self.traducir("info"), self.traducir("ninguno_marcado"))
+            return
+
         dst_root = filedialog.askdirectory(title=self.traducir("elige_destino"))
-        if not dst_root: return
-        items = list(self._checked_paths)
+        if not dst_root:
+            return
+
         self._copy_items_with_progress(items, dest_base=dst_root, keep_names=True, include_top_dir=True)
 
     # ---- Implementación interna (tu diálogo de progreso propio)
@@ -1277,7 +1314,7 @@ class XboxGameLookupApp(ctk.CTk):
                 srcs.append(s)                       # carpeta/archivo tal cual
 
         from_str = "\0".join(srcs) + "\0\0"
-        to_str   = os.path.abspath(dest_base) + "\0"
+        to_str   = os.path.abspath(dest_base) + "\0\0"  # ✅ doble null
 
         # HWND de la ventana (si falla, usa 0 y funciona igual)
         try:
@@ -1310,9 +1347,10 @@ class XboxGameLookupApp(ctk.CTk):
     def _copy_items_with_progress(self, sources, dest_base, keep_names=True, include_top_dir=True):
         """
         Copia usando el motor del Explorador (SHFileOperation) vía ctypes.
-        No requiere pywin32. Muestra el diálogo nativo de Windows.
+        Muestra el diálogo nativo de Windows.
         """
         import os, sys
+
         if not sources:
             messagebox.showinfo(self.traducir("info"), self.traducir("ninguno_marcado"))
             return
@@ -1320,18 +1358,43 @@ class XboxGameLookupApp(ctk.CTk):
             messagebox.showerror(self.traducir("error"), "Esta copia solo está disponible en Windows.")
             return
 
-        # Normaliza rutas y asegura carpeta destino
-        os.makedirs(dest_base, exist_ok=True)
+        # 1) Normaliza destino y asegura que exista
+        dst = os.path.abspath(dest_base.rstrip("\\/"))
+        os.makedirs(dst, exist_ok=True)
+
+        # 2) Normaliza orígenes finales (expande “solo contenido” si aplica)
         srcs = []
         for s in sources:
-            s = os.path.abspath(s)
-            if os.path.isdir(s) and not include_top_dir:
-                srcs.append(os.path.join(s, "*"))   # copiar solo contenido
+            if not s:
+                continue
+            s_abs = os.path.abspath(s.rstrip("\\/"))
+            if os.path.isdir(s_abs) and not include_top_dir:
+                # copiar SOLO el contenido
+                srcs.append(os.path.join(s_abs, "*"))
             else:
-                srcs.append(s)                       # copiar carpeta/archivo tal cual
+                # copiar carpeta/archivo tal cual
+                srcs.append(s_abs)
 
-        # Llama a SHFileOperation
-        return self._copy_with_explorer_ctypes(srcs, dest_base)
+        # 3) Validación: NO permitir copiar una carpeta dentro de sí misma (o a su descendiente)
+        for s in srcs:
+            # cuando copiamos con comodín "*", la carpeta real es su dirname
+            s_cmp = os.path.dirname(s) if s.endswith("*") else s
+            if dst == s_cmp or dst.startswith(s_cmp + os.sep):
+                messagebox.showerror(
+                    self.traducir("error"),
+                    self.traducir("no_puedes_copiar_en_si_misma") if hasattr(self, "traducir")
+                    else "No puedes copiar una carpeta dentro de sí misma."
+                )
+                return
+
+        # 4) Filtra orígenes inexistentes (evita fallos del shell)
+        srcs = [p for p in srcs if os.path.exists(p if not p.endswith("*") else os.path.dirname(p))]
+        if not srcs:
+            messagebox.showinfo(self.traducir("info"), self.traducir("ninguno_marcado"))
+            return
+
+        # 5) Copia con el Explorador (ctypes).  _copy_with_explorer_ctypes ya usa \0\0 en pTo ✅
+        return self._copy_with_explorer_ctypes(srcs, dst)
 
 
     def _copy_with_explorer_ctypes(self, src_list, dest_dir):
@@ -1363,7 +1426,8 @@ class XboxGameLookupApp(ctk.CTk):
 
         # multistring (cada ruta terminada en '\0', y doble '\0' al final)
         from_str = "\0".join(os.path.abspath(p) for p in src_list) + "\0\0"
-        to_str   = os.path.abspath(dest_dir) + "\0"
+        to_str   = os.path.abspath(dest_dir) + "\0\0"   # ✅ doble null
+
 
         # intenta obtener HWND de la ventana principal; si falla, 0 (funciona igual)
         try:
@@ -1458,32 +1522,104 @@ class XboxGameLookupApp(ctk.CTk):
         ctk.CTkButton(dlg, text="Cerrar", command=on_close).pack(pady=(0, 10))
         dlg.wait_window()
 
+    def _render_files(self, entries):
+        for iid in self.tree_files.get_children():
+            self.tree_files.delete(iid)
+        self._files_row_by_path.clear()
+
+        # Acceso local para velocidad
+        checked = self._checked_paths
+        sep = os.sep
+
+        for name, ftype, size, mtime, path in entries:
+            # ¿Está marcado este path exacto?
+            exact = path in checked
+            # ¿Contiene marcados en su interior? (útil cuando estamos en un padre)
+            contains = False
+            if not exact and os.path.isdir(path):
+                prefix = path.rstrip("\\/") + sep
+                # corta rápido en la primera coincidencia
+                for p in checked:
+                    if p.startswith(prefix):
+                        contains = True
+                        break
+
+            if exact:
+                mark = "☑"          # marcado exacto
+            elif contains:
+                mark = "◩"          # contiene marcados dentro (estado intermedio)
+            else:
+                mark = "☐"
+
+            if size is None and os.path.isdir(path):
+                size_text = self.traducir("calculando")
+            else:
+                size_text = fmt_size(size if isinstance(size, (int, float)) else 0)
+
+            iid = self.tree_files.insert(
+                "", "end",
+                values=(mark, name, ftype, size_text, fmt_mtime(mtime), path)
+            )
+            self._files_row_by_path[path] = iid
+
+        self._update_counts()
+
     def _process_game_list(self, list_content: str):
         """
-        Procesa una lista de juegos, los marca y muestra el resumen.
+        Procesa una lista pegada de juegos (separados por comas o saltos de línea),
+        marca todas las carpetas encontradas en el explorador y muestra los faltantes.
         """
+        # 0) Asegura que la DB esté cargada y las raíces indexadas
+        if not _items_by_key:
+            load_default_jsons()
+            self._update_db_summary()
+
+        if not hasattr(self, "_paths_by_tid"):
+            self._paths_by_tid = {}
+        if not hasattr(self, "_paths_by_name"):
+            self._paths_by_name = {}
+
+        if not self._paths_by_tid and not self._paths_by_name:
+            for r in getattr(self, "_scan_roots", []) or []:
+                if os.path.isdir(r):
+                    self._scan_root(r)
+            self._update_db_summary()
+
+        # 1) UI: estado "procesando"
         self.status_label.configure(text="Procesando lista...", text_color="orange")
         self.update_idletasks()
 
-        found_paths = set()
-        total_games = 0
-        missing_games = []
-        
+        found_paths: set[str] = set()
+        missing_games: list[str] = []
+
         try:
-            game_names = [name.strip() for name in list_content.replace('\n', ',').split(',') if name.strip()]
+            # 2) Parseo de lista: comas y/o saltos de línea
+            raw = list_content.replace("\r", "\n")
+            raw = raw.replace("\n", ",")
+            game_names = [n.strip() for n in raw.split(",") if n.strip()]
             total_games = len(game_names)
-            
+
+            # 3) Resolver rutas para cada nombre
             for name in game_names:
                 norm_n = norm_text(name)
-                matching_ids = {it["title_id"] for nname, it in _index_name if norm_n in nname}
-                
-                paths_found_for_name = set()
-                for tid in matching_ids:
-                    paths = self._find_paths_for_tid(tid)
-                    paths_found_for_name.update(paths)
-                
-                if norm_n in getattr(self, "_paths_by_name", {}):
-                    paths_found_for_name.update(self._paths_by_name[norm_n])
+                paths_found_for_name: set[str] = set()
+
+                # 3a) Match por nombre en índice de nombres -> TIDs
+                if _index_name:
+                    matching_tids = {it["title_id"] for nname, it in _index_name if norm_n in nname}
+                    for tid in matching_tids:
+                        paths_found_for_name.update(self._find_paths_for_tid(tid))
+
+                # 3b) Match directo en índice por nombre de carpeta (construido al escanear raíces)
+                if self._paths_by_name:
+                    # exacto
+                    if norm_n in self._paths_by_name:
+                        paths_found_for_name.update(self._paths_by_name[norm_n])
+                    else:
+                        # contiene (suave) — útil para listas con pequeñas variaciones
+                        for key_name, paths in self._paths_by_name.items():
+                            if norm_n in key_name:
+                                paths_found_for_name.update(paths)
 
                 if paths_found_for_name:
                     found_paths.update(paths_found_for_name)
@@ -1494,29 +1630,43 @@ class XboxGameLookupApp(ctk.CTk):
             messagebox.showerror(self.traducir("error"), f"Error al procesar la lista:\n{e}")
             self.status_label.configure(text=self.traducir("error"), text_color="red")
             return
-
-        # 1. Limpia las marcas previas y añade las nuevas
-        self._checked_paths.clear()
-        for p in found_paths:
-            self._checked_paths.add(p)
         
-        self._render_files(getattr(self, "_current_entries", []) or [])
+        # 4) Actualiza los checks
+        self._checked_paths.clear()
+        self._checked_paths.update(found_paths)
 
-        # 2. Navega al primer directorio raíz para mostrar los resultados
-        # Esto es crucial para que se refresque la vista
-        if getattr(self, "_scan_roots", []):
-            self._enter_folder(self._scan_roots[0])
-        elif found_paths:
-             self._enter_folder(os.path.dirname(os.path.dirname(next(iter(found_paths)))))
-
-        # 3. Muestra el mensaje de estado
-        self.status_label.configure(
-            text=f"Procesados {total_games} juegos. Se encontraron {len(found_paths)} carpetas.", 
-            text_color="green"
-        )
+        # 🔄 refresca lo que esté en pantalla
+        if getattr(self, "_current_entries", None):
+            self._render_files(self._current_entries)
         self._update_counts()
 
-        # 4. Muestra la ventana de juegos faltantes si los hay
+        # 5) Abrir la *mejor* carpeta: el padre que agrupa más hallazgos
+        if found_paths:
+            try:
+                from collections import Counter
+                parents = [os.path.dirname(p.rstrip("\\/")) for p in found_paths]
+                # idealmente abre donde los hijos directos ya son los marcados
+                best_parent, _ = Counter(parents).most_common(1)[0]
+                if best_parent and os.path.isdir(best_parent):
+                    self._enter_folder(best_parent)
+            except Exception:
+                # fallback razonable
+                try:
+                    common = os.path.commonpath(list(found_paths))
+                    if not os.path.isdir(common):
+                        common = os.path.dirname(common)
+                    if common:
+                        self._enter_folder(common)
+                except Exception:
+                    if getattr(self, "_scan_roots", []):
+                        self._enter_folder(self._scan_roots[0])
+
+        # 6) Estado + faltantes
+        self.status_label.configure(
+            text=f"Procesados {len(game_names)} juegos. Se encontraron {len(found_paths)} carpetas.",
+            text_color="green" if found_paths else "orange"
+        )
+        self._update_counts()
         if missing_games:
             self.after(50, lambda: self._show_missing_games_dialog(missing_games))
 
@@ -1536,6 +1686,17 @@ class XboxGameLookupApp(ctk.CTk):
                 self._process_game_list(list_content)
         except Exception as e:
             messagebox.showerror(self.traducir("error"), f"Error al leer el archivo:\n{e}")
+
+    def _copy_checked_items_from_browser(self):
+        if not self._checked_paths:
+            messagebox.showinfo(self.traducir("info"), self.traducir("ninguno_marcado")); return
+        dst_root = filedialog.askdirectory(title=self.traducir("elige_destino"))
+        if not dst_root: return
+        # Solo lo que exista en disco
+        items = [p for p in self._checked_paths if os.path.exists(p)]
+        if not items:
+            messagebox.showinfo(self.traducir("info"), self.traducir("ninguno_marcado")); return
+        self._copy_items_with_progress(items, dest_base=dst_root, keep_names=True, include_top_dir=True)
 
 # -------------------- main --------------------
 if __name__ == "__main__":
