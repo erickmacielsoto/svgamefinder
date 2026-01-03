@@ -35,6 +35,7 @@ import shutil
 import threading
 import time
 from datetime import datetime
+from PIL import Image, ImageTk
 
 
 # -------------------- Config --------------------
@@ -64,6 +65,9 @@ traducciones = {
         "cargar_json": "Cargar .json",
         "limpiar_db": "Limpiar .json",
         "resumen_db": "Archivos: {files}  |  Registros: {rows}  |  {by_system}",
+        "limpiar_lista": "Limpiar lista",
+        "pegar_lista": "Pegar lista",
+        "cargar_lista": "Cargar lista",
         "agregar_carpeta": "Agregar carpeta",
         "abrir_carpeta": "Abrir carpeta",
         "ver_archivos": "Ver archivos…",
@@ -118,6 +122,25 @@ traducciones = {
         "auto_explorer": "Auto (Explorer si hay)",
         "explorer_forzar": "Explorer (forzar)",
         "interno": "Interno (propio)",
+        "mostrar_nombres": "Mostrar nombres",
+        # Tooltips
+        "limpiar_lista_tooltip": "Elimina todos los juegos de la lista cargada",
+        "pegar_lista_tooltip": "Pega una lista de juegos desde el portapapeles",
+        "cargar_lista_tooltip": "Carga una lista de juegos desde un archivo",
+        "limpiar_db_tooltip": "Limpia todos los archivos JSON cargados",
+        "cargar_json_tooltip": "Carga un archivo JSON con datos de juegos",
+        "agregar_carpeta_tooltip": "Agrega una carpeta para indexar juegos",
+        "atras_tooltip": "Navega hacia atrás en el historial",
+        "adelante_tooltip": "Navega hacia adelante en el historial",
+        "subir_tooltip": "Sube un nivel en la jerarquía de carpetas",
+        "abrir_explorer_tooltip": "Abre la carpeta actual en el Explorador de Windows",
+        "cambiar_carpeta_tooltip": "Cambia la carpeta actual del explorador",
+        "seleccionar_todo_tooltip": "Selecciona todos los archivos visibles",
+        "marcar_visibles_tooltip": "Marca todos los archivos visibles",
+        "desmarcar_visibles_tooltip": "Desmarca todos los archivos visibles",
+        "copiar_seleccion_tooltip": "Copia los archivos seleccionados",
+        "copiar_marcados_tooltip": "Copia los archivos marcados",
+        "limpiar_seleccion_tooltip": "Limpia la selección y los marcados",
     },
     "en": {
         "modo_oscuro": "Dark Mode",
@@ -186,6 +209,25 @@ traducciones = {
         "auto_explorer": "Auto (Explorer if available)",
         "explorer_forzar": "Explorer (force)",
         "interno": "Internal (built-in)",
+        "mostrar_nombres": "Show names",
+        # Tooltips
+        "limpiar_lista_tooltip": "Clears all games from the loaded list",
+        "pegar_lista_tooltip": "Pastes a list of games from clipboard",
+        "cargar_lista_tooltip": "Loads a list of games from a file",
+        "limpiar_db_tooltip": "Clears all loaded JSON files",
+        "cargar_json_tooltip": "Loads a JSON file with game data",
+        "agregar_carpeta_tooltip": "Adds a folder to index games",
+        "atras_tooltip": "Navigate back in history",
+        "adelante_tooltip": "Navigate forward in history",
+        "subir_tooltip": "Go up one level in folder hierarchy",
+        "abrir_explorer_tooltip": "Opens current folder in Windows Explorer",
+        "cambiar_carpeta_tooltip": "Changes the current explorer folder",
+        "seleccionar_todo_tooltip": "Selects all visible files",
+        "marcar_visibles_tooltip": "Checks all visible files",
+        "desmarcar_visibles_tooltip": "Unchecks all visible files",
+        "copiar_seleccion_tooltip": "Copies selected files",
+        "copiar_marcados_tooltip": "Copies checked files",
+        "limpiar_seleccion_tooltip": "Clears selection and checked items",
     },
     "pt": {
         "modo_oscuro": "Modo Escuro",
@@ -254,6 +296,25 @@ traducciones = {
         "auto_explorer": "Auto (Explorer se houver)",
         "explorer_forzar": "Explorer (forçar)",
         "interno": "Interno",
+        "mostrar_nombres": "Mostrar nomes",
+        # Tooltips
+        "limpiar_lista_tooltip": "Remove todos os jogos da lista carregada",
+        "pegar_lista_tooltip": "Cola uma lista de jogos da área de transferência",
+        "cargar_lista_tooltip": "Carrega uma lista de jogos de um arquivo",
+        "limpiar_db_tooltip": "Limpa todos os arquivos JSON carregados",
+        "cargar_json_tooltip": "Carrega um arquivo JSON com dados de jogos",
+        "agregar_carpeta_tooltip": "Adiciona uma pasta para indexar jogos",
+        "atras_tooltip": "Navega para trás no histórico",
+        "adelante_tooltip": "Navega para frente no histórico",
+        "subir_tooltip": "Sobe um nível na hierarquia de pastas",
+        "abrir_explorer_tooltip": "Abre a pasta atual no Explorador do Windows",
+        "cambiar_carpeta_tooltip": "Altera a pasta atual do explorador",
+        "seleccionar_todo_tooltip": "Seleciona todos os arquivos visíveis",
+        "marcar_visibles_tooltip": "Marca todos os arquivos visíveis",
+        "desmarcar_visibles_tooltip": "Desmarca todos os arquivos visíveis",
+        "copiar_seleccion_tooltip": "Copia os arquivos selecionados",
+        "copiar_marcados_tooltip": "Copia os arquivos marcados",
+        "limpiar_seleccion_tooltip": "Limpa a seleção e os marcados",
     }
 }
 
@@ -433,6 +494,67 @@ def fmt_mtime(ts: float) -> str:
     try: return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
     except Exception: return "-"
 
+# -------------------- Tooltip Class --------------------
+class CTkTooltip:
+    """Clase para crear tooltips (ayuda al hacer hover) en widgets de CustomTkinter"""
+    def __init__(self, widget, text, delay=500):
+        self.widget = widget
+        self.text = text
+        self.delay = delay
+        self.tooltip = None
+        self.job_id = None
+        self.widget.bind("<Enter>", self.on_enter)
+        self.widget.bind("<Leave>", self.on_leave)
+        self.widget.bind("<Motion>", self.on_motion)
+    
+    def on_enter(self, event=None):
+        self.schedule_tooltip()
+    
+    def on_leave(self, event=None):
+        self.unschedule_tooltip()
+        self.hide_tooltip()
+    
+    def on_motion(self, event=None):
+        self.unschedule_tooltip()
+        self.schedule_tooltip()
+    
+    def schedule_tooltip(self):
+        self.unschedule_tooltip()
+        self.job_id = self.widget.after(self.delay, self.show_tooltip)
+    
+    def unschedule_tooltip(self):
+        if self.job_id:
+            self.widget.after_cancel(self.job_id)
+            self.job_id = None
+    
+    def show_tooltip(self):
+        if self.tooltip:
+            return
+        
+        x = self.widget.winfo_rootx() + 25
+        y = self.widget.winfo_rooty() + 20
+        
+        self.tooltip = ctk.CTkToplevel(self.widget)
+        self.tooltip.wm_overrideredirect(True)
+        self.tooltip.wm_geometry(f"+{x}+{y}")
+        
+        label = ctk.CTkLabel(
+            self.tooltip,
+            text=self.text,
+            corner_radius=6,
+            fg_color=("gray70", "gray30"),
+            text_color=("gray10", "gray90"),
+            font=ctk.CTkFont(size=11),
+            padx=8,
+            pady=4
+        )
+        label.pack()
+    
+    def hide_tooltip(self):
+        if self.tooltip:
+            self.tooltip.destroy()
+            self.tooltip = None
+
 # -------------------- App --------------------
 class XboxGameLookupApp(ctk.CTk):
     def __init__(self):
@@ -449,13 +571,22 @@ class XboxGameLookupApp(ctk.CTk):
         self.idioma_actual = self._detectar_idioma_sistema()
         self.modo_oscuro_inicial = self._detectar_modo_oscuro_sistema()
         self.copy_method = "explorer"  # "auto" | "explorer" | "internal"
+        self.mostrar_nombres_botones = True  # Por defecto mostrar nombres
         self._cargar_config()
         self._aplicar_estilo_treeview("dark" if self.modo_oscuro_inicial else "light")
         ctk.set_appearance_mode("dark" if self.modo_oscuro_inicial else "light")
+        
+        # Cargar iconos (si existen)
+        self._load_icons()
 
         # UI
         self._setup_ui()
         self._update_ui_texts()
+        # Aplicar iconos a los botones después de crear la UI
+        self._apply_icons_to_buttons()
+        # Aplicar preferencia de mostrar/ocultar nombres después de aplicar iconos
+        if hasattr(self, 'show_names_var'):
+            self._toggle_button_names()
         
         # Configurar ajuste responsivo de botones
         self.bind("<Configure>", self._on_window_resize)
@@ -522,7 +653,7 @@ class XboxGameLookupApp(ctk.CTk):
         # Ajustar tamaños iniciales después de que la ventana se renderice
         self.after(100, self._adjust_button_sizes)
 
-        # Navegación + tamaños + checks
+        # Navegación + tamaños + checks (inicializar después de crear la UI)
         self._nav_history = []
         self._nav_index = -1
         self._folder_size_cache = {}
@@ -534,7 +665,99 @@ class XboxGameLookupApp(ctk.CTk):
         self._checked_paths = set()
         self._user_changed_folder = False  # Rastrea si el usuario cambió manualmente la carpeta
 
-        self._update_nav_buttons()
+    def _load_icons(self):
+        """Carga los iconos desde la carpeta 'icons' si existen"""
+        self.icons = {}
+        icons_dir = Path(_app_root()) / "icons"
+        
+        if not icons_dir.exists():
+            # Crear carpeta de ejemplo si no existe
+            icons_dir.mkdir(exist_ok=True)
+            return
+        
+        # Mapeo de nombres de iconos a sus archivos
+        icon_mapping = {
+            # Botones superiores
+            'limpiar_lista': 'trash.png',
+            'pegar_lista': 'clipboard.png',
+            'cargar_lista': 'folder.png',
+            'limpiar_json': 'clean.png',
+            'cargar_json': 'download.png',  # También busca 'dowload.png' por si hay un typo
+            'agregar_carpeta': 'add_folder.png',
+            # Botones explorador
+            'atras': 'back.png',
+            'adelante': 'forward.png',
+            'subir': 'up.png',
+            'abrir_explorer': 'open.png',
+            'cambiar_carpeta': 'refresh.png',
+            'seleccionar_todo': 'select_all.png',
+            'marcar_visibles': 'check.png',
+            'desmarcar_visibles': 'uncheck.png',
+            'copiar_seleccion': 'copy.png',
+            'copiar_marcados': 'copy_marked.png',
+            'limpiar_seleccion': 'clear.png',
+            'buscar': 'search.png',
+            'limpiar_filtro': 'clear_filter.png',
+        }
+        
+        for key, filename in icon_mapping.items():
+            icon_path = icons_dir / filename
+            # Si no existe, intentar con variantes comunes (typos)
+            if not icon_path.exists() and key == 'cargar_json':
+                icon_path = icons_dir / 'dowload.png'  # Variante con typo común
+            if icon_path.exists():
+                try:
+                    # Cargar imagen y redimensionar a 20x20 píxeles
+                    img = Image.open(str(icon_path))
+                    img = img.resize((20, 20), Image.Resampling.LANCZOS)
+                    self.icons[key] = ctk.CTkImage(light_image=img, dark_image=img, size=(20, 20))
+                except Exception as e:
+                    print(f"Error cargando icono {filename}: {e}")
+    
+    def _apply_icons_to_buttons(self):
+        """Aplica los iconos cargados a los botones correspondientes"""
+        if not hasattr(self, 'icons') or not self.icons:
+            return
+        
+        # Mapeo de botones a claves de iconos
+        button_icon_map = {
+            # Botones superiores
+            'btn_limpiar_lista': 'limpiar_lista',
+            'btn_paste_list': 'pegar_lista',
+            'btn_cargar_lista': 'cargar_lista',
+            'btn_limpiar': 'limpiar_json',
+            'btn_cargar': 'cargar_json',
+            'btn_add_root': 'agregar_carpeta',
+            # Botones explorador
+            'btn_back': 'atras',
+            'btn_forward': 'adelante',
+            'btn_up': 'subir',
+            'btn_open_explorer': 'abrir_explorer',
+            'btn_change_folder': 'cambiar_carpeta',
+            'btn_select_all': 'seleccionar_todo',
+            'btn_mark_all': 'marcar_visibles',
+            'btn_unmark_all': 'desmarcar_visibles',
+            'btn_copy_rows': 'copiar_seleccion',
+            'btn_copy_marked': 'copiar_marcados',
+            'btn_limpiar_seleccion': 'limpiar_seleccion',
+            'btn_filter': 'buscar',
+            'btn_filter_clear': 'limpiar_filtro',
+            'boton_buscar': 'buscar',
+        }
+        
+        for button_attr, icon_key in button_icon_map.items():
+            if hasattr(self, button_attr) and icon_key in self.icons:
+                button = getattr(self, button_attr)
+                try:
+                    # Obtener el texto actual del botón (sin emoji)
+                    current_text = button.cget("text")
+                    # Extraer solo el texto después del emoji (si existe)
+                    text_parts = current_text.split(" ", 1)
+                    button_text = text_parts[-1] if len(text_parts) > 1 else current_text
+                    # Configurar el botón con el icono y el texto
+                    button.configure(image=self.icons[icon_key], text=button_text, compound="left")
+                except Exception as e:
+                    print(f"Error aplicando icono a {button_attr}: {e}")
 
     # ---------- traducción y preferencias ----------
     def traducir(self, clave): return traducciones[self.idioma_actual].get(clave, f"MISSING_TRANSLATION_{clave}")
@@ -543,6 +766,7 @@ class XboxGameLookupApp(ctk.CTk):
         config = {
             "idioma": self.idioma_actual,
             "modo_oscuro": self.switch_var.get(),
+            "mostrar_nombres_botones": self.show_names_var.get() if hasattr(self, 'show_names_var') else True,
             "scan_roots": getattr(self, "_scan_roots", []),
             "copy_method": self.copy_method,
         }
@@ -559,6 +783,8 @@ class XboxGameLookupApp(ctk.CTk):
                     config = json.load(f)
                 if config.get("idioma") in traducciones: self.idioma_actual = config["idioma"]
                 if config.get("modo_oscuro") is not None: self.modo_oscuro_inicial = config["modo_oscuro"]
+                if config.get("mostrar_nombres_botones") is not None: 
+                    self.mostrar_nombres_botones = config["mostrar_nombres_botones"]
                 self._scan_roots = config.get("scan_roots", [])
                 if config.get("copy_method") in ("auto","explorer","internal"):
                     self.copy_method = config["copy_method"]
@@ -624,6 +850,95 @@ class XboxGameLookupApp(ctk.CTk):
         ctk.set_appearance_mode("dark" if self.switch_var.get() else "light")
         self._aplicar_estilo_treeview("dark" if self.switch_var.get() else "light")
         self._guardar_config()
+    
+    def _toggle_button_names(self):
+        """Oculta o muestra los nombres de los botones"""
+        show_names = self.show_names_var.get()
+        self.mostrar_nombres_botones = show_names
+        
+        # Mapeo de botones a sus textos traducidos
+        button_texts = {
+            # Botones superiores
+            'btn_limpiar_lista': self.traducir('limpiar_lista'),
+            'btn_paste_list': self.traducir('pegar_lista'),
+            'btn_cargar_lista': self.traducir('cargar_lista'),
+            'btn_limpiar': self.traducir('limpiar_db'),
+            'btn_cargar': self.traducir('cargar_json'),
+            'btn_add_root': self.traducir('agregar_carpeta'),
+            # Botones explorador
+            'btn_back': self.traducir('atras'),
+            'btn_forward': self.traducir('adelante'),
+            'btn_up': self.traducir('subir'),
+            'btn_open_explorer': self.traducir('abrir_explorer'),
+            'btn_change_folder': self.traducir('cambiar_carpeta'),
+            'btn_select_all': self.traducir('seleccionar_todo'),
+            'btn_mark_all': self.traducir('marcar_visibles'),
+            'btn_unmark_all': self.traducir('desmarcar_visibles'),
+            'btn_copy_rows': self.traducir('copiar_seleccion'),
+            'btn_copy_marked': self.traducir('copiar_marcados'),
+            'btn_limpiar_seleccion': self.traducir('limpiar_seleccion'),
+            'btn_filter': self.traducir('aplicar_filtro'),
+            'btn_filter_clear': self.traducir('limpiar_filtro'),
+            'boton_buscar': self.traducir('buscar'),
+        }
+        
+        for button_attr, text_key in button_texts.items():
+            if hasattr(self, button_attr):
+                button = getattr(self, button_attr)
+                try:
+                    # Obtener el icono desde el diccionario de iconos cargados
+                    current_image = None
+                    icon_key_map = {
+                        'btn_limpiar_lista': 'limpiar_lista',
+                        'btn_paste_list': 'pegar_lista',
+                        'btn_cargar_lista': 'cargar_lista',
+                        'btn_limpiar': 'limpiar_json',
+                        'btn_cargar': 'cargar_json',
+                        'btn_add_root': 'agregar_carpeta',
+                        'btn_back': 'atras',
+                        'btn_forward': 'adelante',
+                        'btn_up': 'subir',
+                        'btn_open_explorer': 'abrir_explorer',
+                        'btn_change_folder': 'cambiar_carpeta',
+                        'btn_select_all': 'seleccionar_todo',
+                        'btn_mark_all': 'marcar_visibles',
+                        'btn_unmark_all': 'desmarcar_visibles',
+                        'btn_copy_rows': 'copiar_seleccion',
+                        'btn_copy_marked': 'copiar_marcados',
+                        'btn_limpiar_seleccion': 'limpiar_seleccion',
+                        'btn_filter': 'buscar',
+                        'btn_filter_clear': 'limpiar_filtro',
+                        'boton_buscar': 'buscar',
+                    }
+                    icon_key = icon_key_map.get(button_attr)
+                    if icon_key and hasattr(self, 'icons') and icon_key in self.icons:
+                        current_image = self.icons[icon_key]
+                    else:
+                        # Intentar obtener el icono actual del botón como fallback
+                        try:
+                            img_value = button.cget("image")
+                            if img_value:
+                                current_image = img_value
+                        except:
+                            pass
+                    
+                    if show_names:
+                        # Mostrar nombre: icono + texto
+                        if current_image:
+                            button.configure(text=text_key, image=current_image, compound="left")
+                        else:
+                            button.configure(text=text_key, image="")
+                    else:
+                        # Ocultar nombre: solo icono
+                        if current_image:
+                            button.configure(text="", image=current_image)
+                        else:
+                            # Si no hay icono, mantener el texto (no podemos ocultarlo sin icono)
+                            button.configure(text=text_key)
+                except Exception as e:
+                    print(f"Error actualizando botón {button_attr}: {e}")
+        
+        self._guardar_config()
 
     # ---------- copiar texto ----------
     def _copiar_fila(self, tree):
@@ -685,6 +1000,13 @@ class XboxGameLookupApp(ctk.CTk):
         self.switch = ctk.CTkSwitch(left, text=self.traducir("modo_oscuro"),
                                     variable=self.switch_var, command=self._toggle_mode)
         self.switch.pack(side="left", padx=(10, 10))
+        
+        # Switch para mostrar/ocultar nombres de botones
+        self.show_names_var = ctk.BooleanVar(value=self.mostrar_nombres_botones)
+        self.switch_names = ctk.CTkSwitch(left, text=self.traducir("mostrar_nombres"),
+                                         variable=self.show_names_var, command=self._toggle_button_names)
+        self.switch_names.pack(side="left", padx=(10, 10))
+        
         self.idioma_menu_label = ctk.CTkLabel(left, text=f"🌐 {self.traducir('idioma')}:")
         self.idioma_menu_label.pack(side="left", padx=(10, 5))
         self.selector_idioma = ctk.CTkOptionMenu(left, values=["Español", "English", "Português"],
@@ -708,20 +1030,30 @@ class XboxGameLookupApp(ctk.CTk):
         )
         self.copy_method_menu.grid(row=0, column=1, padx=(0,6), pady=2, sticky="w")
         
-        self.btn_limpiar_lista = ctk.CTkButton(right, text="🗑️ Limpiar lista", command=self._limpiar_lista_cargada, width=110)
-        self.btn_limpiar_lista.grid(row=0, column=2, padx=(6, 6), pady=2, sticky="w")
-        self.btn_paste_list = ctk.CTkButton(right, text="📋 Pegar lista", command=self._pegar_lista_dialog, width=110)
-        self.btn_paste_list.grid(row=0, column=3, padx=(6, 6), pady=2, sticky="w")
-        self.btn_cargar_lista = ctk.CTkButton(right, text="📁 Cargar lista", command=self._cargar_lista, width=110)
-        self.btn_cargar_lista.grid(row=0, column=4, padx=(6, 6), pady=2, sticky="w")
+        # Espaciado uniforme para todos los botones
+        BTN_PADX = (4, 4)
+        BTN_PADY = 2
         
-        # Fila 2: Botones de JSON y carpeta
+        self.btn_limpiar_lista = ctk.CTkButton(right, text=self.traducir("limpiar_lista"), command=self._limpiar_lista_cargada, width=110)
+        self.btn_limpiar_lista.grid(row=0, column=2, padx=BTN_PADX, pady=BTN_PADY, sticky="w")
+        CTkTooltip(self.btn_limpiar_lista, self.traducir("limpiar_lista"))
+        self.btn_paste_list = ctk.CTkButton(right, text=self.traducir("pegar_lista"), command=self._pegar_lista_dialog, width=110)
+        self.btn_paste_list.grid(row=0, column=3, padx=BTN_PADX, pady=BTN_PADY, sticky="w")
+        CTkTooltip(self.btn_paste_list, self.traducir("pegar_lista"))
+        self.btn_cargar_lista = ctk.CTkButton(right, text=self.traducir("cargar_lista"), command=self._cargar_lista, width=110)
+        self.btn_cargar_lista.grid(row=0, column=4, padx=BTN_PADX, pady=BTN_PADY, sticky="w")
+        CTkTooltip(self.btn_cargar_lista, self.traducir("cargar_lista"))
+        
+        # Fila 2: Botones de JSON y carpeta (alineados con la fila 1, empezando en columna 2)
         self.btn_limpiar = ctk.CTkButton(right, text=f"🧹 {self.traducir('limpiar_db')}", command=self._limpiar_db, width=110)
-        self.btn_limpiar.grid(row=1, column=0, padx=(6, 6), pady=2, sticky="w")
+        self.btn_limpiar.grid(row=1, column=2, padx=BTN_PADX, pady=BTN_PADY, sticky="w")
+        CTkTooltip(self.btn_limpiar, self.traducir("limpiar_db"))
         self.btn_cargar = ctk.CTkButton(right, text=f"📥 {self.traducir('cargar_json')}", command=self._cargar_json, width=110)
-        self.btn_cargar.grid(row=1, column=1, padx=(6, 6), pady=2, sticky="w")
+        self.btn_cargar.grid(row=1, column=3, padx=BTN_PADX, pady=BTN_PADY, sticky="w")
+        CTkTooltip(self.btn_cargar, self.traducir("cargar_json"))
         self.btn_add_root = ctk.CTkButton(right, text=f"📂 {self.traducir('agregar_carpeta')}", command=self._add_scan_root, width=110)
-        self.btn_add_root.grid(row=1, column=2, padx=(6, 6), pady=2, sticky="w")
+        self.btn_add_root.grid(row=1, column=4, padx=BTN_PADX, pady=BTN_PADY, sticky="w")
+        CTkTooltip(self.btn_add_root, self.traducir("agregar_carpeta"))
         
         # Guardar anchos originales de los botones superiores
         self._top_button_widths = {
@@ -746,6 +1078,7 @@ class XboxGameLookupApp(ctk.CTk):
         self.entry.bind("<Return>", self._buscar_todo)
         self.boton_buscar = ctk.CTkButton(entry_frame, text=f"🔍 {self.traducir('buscar')}", command=self._buscar_todo)
         self.boton_buscar.pack(side="right")
+        CTkTooltip(self.boton_buscar, self.traducir("buscar"))
 
         self.status_label = ctk.CTkLabel(self, text="", fg_color="transparent"); self.status_label.pack(pady=(0, 6))
         
@@ -817,33 +1150,48 @@ class XboxGameLookupApp(ctk.CTk):
         buttons_container = ctk.CTkFrame(buttons_frame, fg_color="transparent")
         buttons_container.pack(side="right")
         
+        # Espaciado uniforme para todos los botones del explorador
+        EXPLORER_BTN_PADX = (4, 4)
+        EXPLORER_BTN_PADY = 2
+        
         # Fila 1: Navegación básica (4 botones)
         self.btn_back = ctk.CTkButton(buttons_container, text=f"⬅️ {self.traducir('atras')}", width=90, command=self._nav_back)
-        self.btn_back.grid(row=0, column=0, padx=(6,4), pady=2)
+        self.btn_back.grid(row=0, column=0, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
+        CTkTooltip(self.btn_back, self.traducir("atras"))  # Mostrar el nombre del botón en el tooltip
         self.btn_forward = ctk.CTkButton(buttons_container, text=f"➡️ {self.traducir('adelante')}", width=90, command=self._nav_forward)
-        self.btn_forward.grid(row=0, column=1, padx=(6,4), pady=2)
+        self.btn_forward.grid(row=0, column=1, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
+        CTkTooltip(self.btn_forward, self.traducir("adelante"))
         self.btn_up = ctk.CTkButton(buttons_container, text=f"⬆️ {self.traducir('subir')}", width=100, command=self._go_up)
-        self.btn_up.grid(row=0, column=2, padx=(6,4), pady=2)
+        self.btn_up.grid(row=0, column=2, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
+        CTkTooltip(self.btn_up, self.traducir("subir"))
         self.btn_open_explorer = ctk.CTkButton(buttons_container, text=f"📂 {self.traducir('abrir_explorer')}", width=120, command=self._open_current_in_explorer)
-        self.btn_open_explorer.grid(row=0, column=3, padx=(6,4), pady=2)
+        self.btn_open_explorer.grid(row=0, column=3, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
+        CTkTooltip(self.btn_open_explorer, self.traducir("abrir_explorer"))
         
         # Fila 2: Navegación y acciones (4 botones)
         self.btn_change_folder = ctk.CTkButton(buttons_container, text=f"🔄 {self.traducir('cambiar_carpeta')}", width=120, command=self._change_browser_folder)
-        self.btn_change_folder.grid(row=1, column=0, padx=(6,4), pady=2)
+        self.btn_change_folder.grid(row=1, column=0, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
+        CTkTooltip(self.btn_change_folder, self.traducir("cambiar_carpeta"))
         self.btn_select_all = ctk.CTkButton(buttons_container, text=f"✅ {self.traducir('seleccionar_todo')}", width=120, command=self._select_all_files)
-        self.btn_select_all.grid(row=1, column=1, padx=(6,4), pady=2)
+        self.btn_select_all.grid(row=1, column=1, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
+        CTkTooltip(self.btn_select_all, self.traducir("seleccionar_todo"))
         self.btn_mark_all = ctk.CTkButton(buttons_container, text=f"☑️ {self.traducir('marcar_visibles')}", width=120, command=self._mark_visible_rows)
-        self.btn_mark_all.grid(row=1, column=2, padx=(6,4), pady=2)
+        self.btn_mark_all.grid(row=1, column=2, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
+        CTkTooltip(self.btn_mark_all, self.traducir("marcar_visibles"))
         self.btn_unmark_all = ctk.CTkButton(buttons_container, text=f"☐ {self.traducir('desmarcar_visibles')}", width=120, command=self._unmark_visible_rows)
-        self.btn_unmark_all.grid(row=1, column=3, padx=(6,4), pady=2)
+        self.btn_unmark_all.grid(row=1, column=3, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
+        CTkTooltip(self.btn_unmark_all, self.traducir("desmarcar_visibles"))
         
         # Fila 3: Acciones de copia (3 botones)
         self.btn_copy_rows = ctk.CTkButton(buttons_container, text=f"📋 {self.traducir('copiar_seleccion')}", width=120, command=self._copy_selected_rows_browser)
-        self.btn_copy_rows.grid(row=2, column=0, padx=(6,4), pady=2)
+        self.btn_copy_rows.grid(row=2, column=0, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
+        CTkTooltip(self.btn_copy_rows, self.traducir("copiar_seleccion"))
         self.btn_copy_marked = ctk.CTkButton(buttons_container, text=f"📦 {self.traducir('copiar_marcados')}", width=120, command=self._copy_checked_items_from_browser)
-        self.btn_copy_marked.grid(row=2, column=1, padx=(6,4), pady=2)
+        self.btn_copy_marked.grid(row=2, column=1, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
+        CTkTooltip(self.btn_copy_marked, self.traducir("copiar_marcados"))
         self.btn_limpiar_seleccion = ctk.CTkButton(buttons_container, text=f"🗑️ {self.traducir('limpiar_seleccion')}", width=120, command=self._limpiar_lista_cargada)
-        self.btn_limpiar_seleccion.grid(row=2, column=2, padx=(6,4), pady=2)
+        self.btn_limpiar_seleccion.grid(row=2, column=2, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
+        CTkTooltip(self.btn_limpiar_seleccion, self.traducir("limpiar_seleccion"))
         
         # Guardar anchos originales de los botones del explorador
         self._explorer_button_widths = {
@@ -870,8 +1218,10 @@ class XboxGameLookupApp(ctk.CTk):
         self.files_filter_entry.bind("<KeyRelease>", lambda e: self._apply_files_filter(debounce=True))
         self.btn_filter = ctk.CTkButton(filter_bar, text=f"🔍 {self.traducir('aplicar_filtro')}", width=90, command=self._apply_files_filter)
         self.btn_filter.pack(side="left", padx=(0,6))
+        CTkTooltip(self.btn_filter, self.traducir("aplicar_filtro"))
         self.btn_filter_clear = ctk.CTkButton(filter_bar, text=f"🧹 {self.traducir('limpiar_filtro')}", width=90, command=self._clear_files_filter)
         self.btn_filter_clear.pack(side="left")
+        CTkTooltip(self.btn_filter_clear, self.traducir("limpiar_filtro"))
 
         # Tabla de archivos (con columna de check y nombre de juego)
         wrap_files = ctk.CTkFrame(self.frame_explorer, fg_color="transparent"); wrap_files.pack(fill="both", expand=True)
@@ -913,33 +1263,28 @@ class XboxGameLookupApp(ctk.CTk):
         self.label_entrada.configure(text=self.traducir("ingresa_texto"))
         self.boton_buscar.configure(text=f"🔍 {self.traducir('buscar')}")
         self.switch.configure(text=self.traducir("modo_oscuro"))
+        if hasattr(self, 'switch_names'):
+            self.switch_names.configure(text=self.traducir("mostrar_nombres"))
         self.idioma_menu_label.configure(text=f"🌐 {self.traducir('idioma')}:")
         # etiquetas del método de copia (mostrar texto amistoso en tooltip rápido)
         method = self.copy_method_var.get()
         self.copy_method_menu.configure(values=["auto","explorer","internal"])
-        self.btn_cargar.configure(text=f"📥 {self.traducir('cargar_json')}")
-        self.btn_limpiar.configure(text=f"🧹 {self.traducir('limpiar_db')}")
-        self.btn_add_root.configure(text=f"📂 {self.traducir('agregar_carpeta')}")
+        # Actualizar textos de otros elementos (no botones con iconos)
         self.label_title.configure(text=self.traducir("title_ids"))
-        self.btn_back.configure(text=f"⬅️ {self.traducir('atras')}")
-        self.btn_forward.configure(text=f"➡️ {self.traducir('adelante')}")
-        self.btn_up.configure(text=f"⬆️ {self.traducir('subir')}")
-        self.btn_open_explorer.configure(text=f"📂 {self.traducir('abrir_explorer')}")
-        self.btn_change_folder.configure(text=f"🔄 {self.traducir('cambiar_carpeta')}")
-        self.btn_copy_rows.configure(text=f"📋 {self.traducir('copiar_seleccion')}")
-        self.btn_copy_marked.configure(text=f"📦 {self.traducir('copiar_marcados')}")
-        self.btn_select_all.configure(text=f"✅ {self.traducir('seleccionar_todo')}")
-        self.btn_mark_all.configure(text=f"☑️ {self.traducir('marcar_visibles')}")
-        self.btn_unmark_all.configure(text=f"☐ {self.traducir('desmarcar_visibles')}")
         self.path_label.configure(text=f"{self.traducir('ruta')} -")
         self.files_filter_entry.configure(placeholder_text=self.traducir("filtro_placeholder"))
-        self.btn_filter.configure(text=f"🔍 {self.traducir('aplicar_filtro')}")
-        self.btn_filter_clear.configure(text=f"🧹 {self.traducir('limpiar_filtro')}")
+        
+        # Los textos de los botones se actualizarán en _toggle_button_names()
+        # que respeta la preferencia de mostrar/ocultar nombres
         self.tree_files.heading("mark", text=self.traducir("col_sel"))
         self.tree_files.heading("name", text=self.traducir("nombre"))
         self.tree_files.heading("type", text=self.traducir("tipo"))
         self.tree_files.heading("size", text=self.traducir("tamano"))
         self.tree_files.heading("modified", text=self.traducir("modificado"))
+        
+        # Aplicar la preferencia de mostrar/ocultar nombres después de actualizar textos
+        if hasattr(self, 'show_names_var'):
+            self._toggle_button_names()
         # refrescar contador
         self._update_counts()
 
@@ -1012,7 +1357,10 @@ class XboxGameLookupApp(ctk.CTk):
 
     def _cambiar_idioma(self, val):
         self.idioma_actual = {'Español':'es','English':'en','Português':'pt'}[val]
-        self.selector_idioma.set(val); self._guardar_config(); self._update_ui_texts(); self._update_db_summary()
+        self.selector_idioma.set(val); self._guardar_config(); self._update_ui_texts(); self._apply_icons_to_buttons(); 
+        if hasattr(self, 'show_names_var'):
+            self._toggle_button_names()
+        self._update_db_summary()
 
     def _limpiar_db(self):
         clear_db(); self._update_db_summary()

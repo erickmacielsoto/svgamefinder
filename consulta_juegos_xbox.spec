@@ -7,6 +7,7 @@ from pathlib import Path
 # Obtener la ruta base del proyecto (directorio donde está el spec)
 spec_dir = os.path.dirname(os.path.abspath(SPECPATH))
 bd_path = Path(spec_dir) / 'bd'
+icons_path = Path(spec_dir) / 'icons'
 
 # Incluir carpeta bd con todos sus archivos JSON
 bd_files = []
@@ -16,9 +17,18 @@ if bd_path.exists():
         rel_path = os.path.relpath(json_file, spec_dir)
         bd_files.append((rel_path, 'bd'))
 
+# Incluir carpeta icons con todos los iconos PNG
+icons_files = []
+if icons_path.exists():
+    for icon_file in icons_path.glob('*.png'):
+        # Ruta absoluta del archivo
+        abs_path = str(icon_file)
+        # Ruta de destino en el ejecutable (relativa a la carpeta del exe)
+        icons_files.append((abs_path, 'icons'))
+
 datas = [
     ('icon.ico', '.'),
-] + bd_files
+] + bd_files + icons_files
 binaries = []
 hiddenimports = ['win32com', 'win32com.shell', 'pythoncom', 'pywintypes']
 tmp_ret = collect_all('customtkinter')
