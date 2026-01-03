@@ -1,14 +1,26 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_all
 
-datas = []
+import os
+from pathlib import Path
+
+# Obtener la ruta base del proyecto (directorio donde está el spec)
+spec_dir = os.path.dirname(os.path.abspath(SPECPATH))
+bd_path = Path(spec_dir) / 'bd'
+
+# Incluir carpeta bd con todos sus archivos JSON
+bd_files = []
+if bd_path.exists():
+    for json_file in bd_path.glob('*.json'):
+        # Ruta relativa desde el spec
+        rel_path = os.path.relpath(json_file, spec_dir)
+        bd_files.append((rel_path, 'bd'))
+
+datas = [
+    ('icon.ico', '.'),
+] + bd_files
 binaries = []
-hiddenimports = []
-datas += collect_data_files('certifi')
-datas += collect_data_files('urllib3')
-datas += collect_data_files('charset_normalizer')
-datas += collect_data_files('idna')
+hiddenimports = ['win32com', 'win32com.shell', 'pythoncom', 'pywintypes']
 tmp_ret = collect_all('customtkinter')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 

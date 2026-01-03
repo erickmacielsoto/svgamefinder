@@ -40,7 +40,7 @@ from datetime import datetime
 # -------------------- Config --------------------
 CONFIG_FILE = Path.home() / ".consulta_juegos_xbox_config.json"
 ctk.set_default_color_theme("blue")
-DEFAULT_JSON_GLOBS = ["bd/*.json"]  # json(s) locales que se cargan automáticamente
+DEFAULT_JSON_GLOBS = ["*.json"]  # json(s) locales que se cargan automáticamente
 
 # -------------------- Traducciones --------------------
 traducciones = {
@@ -105,6 +105,7 @@ traducciones = {
         "col_sel": "✔",
         "marcar_visibles": "Marcar visibles",
         "desmarcar_visibles": "Desmarcar visibles",
+        "limpiar_seleccion": "Limpiar selección",
         "ninguno_marcado": "No hay elementos marcados.",
         "minimizar": "Minimizar",
         # Contador
@@ -175,6 +176,7 @@ traducciones = {
         "col_sel": "✔",
         "marcar_visibles": "Check visible",
         "desmarcar_visibles": "Uncheck visible",
+        "limpiar_seleccion": "Clear selection",
         "ninguno_marcado": "No items checked.",
         "minimizar": "Minimize",
         "seleccionados": "Selected",
@@ -242,6 +244,7 @@ traducciones = {
         "col_sel": "✔",
         "marcar_visibles": "Marcar visíveis",
         "desmarcar_visibles": "Desmarcar visíveis",
+        "limpiar_seleccion": "Limpar seleção",
         "ninguno_marcado": "Nenhum item marcado.",
         "minimizar": "Minimizar",
         "seleccionados": "Selecionados",
@@ -328,21 +331,85 @@ def load_json_file(path: str):
     _loaded_files.append(os.path.abspath(path))
 
 def load_default_jsons():
+    loaded_count = 0
+    
+    # 1) Buscar en la carpeta 'bd' del directorio de la aplicación
     base = Path(_app_root())
     bd_path = base / "bd"
-    if not bd_path.is_dir():
-        print(f"No se encontró la carpeta 'bd' en: {bd_path}")
-        return
-
-    for pat in DEFAULT_JSON_GLOBS:
-        for fname in sorted(bd_path.glob(pat)):
-            absf = os.path.abspath(str(fname))
-            if absf in _loaded_files:
-                continue
-            try:
-                load_json_file(absf)
-            except Exception as e:
-                print(f"Error cargando {absf}: {e}")
+    if bd_path.is_dir():
+        for pat in DEFAULT_JSON_GLOBS:
+            for fname in sorted(bd_path.glob(pat)):
+                absf = os.path.abspath(str(fname))
+                if absf in _loaded_files:
+                    continue
+                try:
+                    load_json_file(absf)
+                    loaded_count += 1
+                    print(f"Cargado: {os.path.basename(absf)}")
+                except Exception as e:
+                    print(f"Error cargando {absf}: {e}")
+    
+    # 2) Buscar en AppData del usuario (C:\Users\<Usuario>\AppData)
+    # Optimizado: solo buscar en el nivel raíz de cada carpeta para evitar escanear miles de archivos
+    # Con límite de tiempo para no bloquear la aplicación
+    try:
+        appdata_path = Path(os.environ.get('APPDATA', ''))
+        if appdata_path and appdata_path.is_dir():
+            # Buscar JSONs directamente en AppData y en subcarpetas comunes
+            # Solo en el nivel raíz para evitar escanear recursivamente
+            search_paths = [
+                appdata_path,  # C:\Users\<Usuario>\AppData\Roaming
+                appdata_path.parent / "Local",  # C:\Users\<Usuario>\AppData\Local
+                appdata_path.parent,  # C:\Users\<Usuario>\AppData
+            ]
+            
+            start_time = time.time()
+            max_search_time = 3.0  # Máximo 3 segundos buscando en AppData
+            
+            for search_path in search_paths:
+                # Verificar timeout
+                if time.time() - start_time > max_search_time:
+                    print(f"Timeout: búsqueda en AppData interrumpida después de {max_search_time}s")
+                    break
+                    
+                if not search_path.is_dir():
+                    continue
+                try:
+                    # Usar os.listdir con try/except para manejar errores rápidamente
+                    items = os.listdir(str(search_path))
+                    # Limitar a los primeros 1000 archivos para no tardar mucho
+                    for item in items[:1000]:
+                        if time.time() - start_time > max_search_time:
+                            break
+                        if not item.lower().endswith('.json'):
+                            continue
+                        fname = search_path / item
+                        if not fname.is_file():
+                            continue
+                        absf = os.path.abspath(str(fname))
+                        if absf in _loaded_files:
+                            continue
+                        try:
+                            load_json_file(absf)
+                            loaded_count += 1
+                            print(f"Cargado desde AppData: {os.path.basename(absf)}")
+                        except Exception as e:
+                            print(f"Error cargando {absf}: {e}")
+                except (PermissionError, OSError) as e:
+                    # Ignorar errores de permisos o acceso
+                    print(f"No se puede acceder a {search_path}: {e}")
+                    continue
+                except Exception as e:
+                    # Cualquier otro error, continuar
+                    print(f"Error en {search_path}: {e}")
+                    continue
+    except Exception as e:
+        print(f"Error buscando en AppData: {e}")
+    
+    if loaded_count > 0:
+        print(f"Precargados {loaded_count} archivo(s) JSON")
+    else:
+        print("No se encontraron archivos JSON para precargar")
 
 
 def summarize_by_system() -> str:
@@ -390,16 +457,70 @@ class XboxGameLookupApp(ctk.CTk):
         self._setup_ui()
         self._update_ui_texts()
         
-        # Datos (Ahora se cargan después de la interfaz)
-        load_default_jsons()
-        if hasattr(self, "_scan_roots"):
-            for r in list(self._scan_roots):
-                if os.path.isdir(r): self._scan_root(r)
-                else:
-                    try: self._scan_roots.remove(r)
-                    except ValueError: pass
-
-        self._update_db_summary()
+        # Configurar ajuste responsivo de botones
+        self.bind("<Configure>", self._on_window_resize)
+        self._resize_job = None
+        
+        # Mostrar indicador de carga
+        self.status_label.configure(text="Cargando datos...", text_color="orange")
+        self.update_idletasks()
+        
+        # Cargar datos en un hilo para no bloquear la UI
+        def load_data():
+            try:
+                # Cargar JSONs (esto puede tardar si hay muchos archivos en AppData)
+                load_default_jsons()
+                
+                # Escanear raíces en segundo plano (no bloquea la UI)
+                # Esto se hace en segundo plano, no esperamos a que termine
+                if hasattr(self, "_scan_roots"):
+                    def scan_roots_background():
+                        try:
+                            for r in list(self._scan_roots):
+                                if os.path.isdir(r): 
+                                    self._scan_root(r)
+                                else:
+                                    try: self._scan_roots.remove(r)
+                                    except ValueError: pass
+                        except Exception as e:
+                            print(f"Error escaneando raíces: {e}")
+                    # Escanear en otro hilo para no bloquear
+                    threading.Thread(target=scan_roots_background, daemon=True).start()
+                
+                # Actualizar UI en el hilo principal - SIEMPRE actualizar
+                self.after(0, lambda: (
+                    self._update_db_summary(),
+                    self.status_label.configure(text="Carga completada", text_color="green"),
+                    self.after(2000, lambda: self.status_label.configure(text="", text_color="gray"))
+                ))
+            except Exception as e:
+                import traceback
+                error_msg = f"Error al cargar: {e}\n{traceback.format_exc()}"
+                print(error_msg)
+                # Asegurarse de actualizar el mensaje incluso si hay error
+                self.after(0, lambda: (
+                    self._update_db_summary(),
+                    self.status_label.configure(text=f"Carga completada (con advertencias)", text_color="orange"),
+                    self.after(2000, lambda: self.status_label.configure(text="", text_color="gray"))
+                ))
+        
+        # Iniciar el hilo de carga
+        load_thread = threading.Thread(target=load_data, daemon=True)
+        load_thread.start()
+        
+        # Timeout de seguridad: si después de 10 segundos no se actualiza, forzar actualización
+        def timeout_check():
+            time.sleep(10)
+            if self.status_label.cget("text") == "Cargando datos...":
+                self.after(0, lambda: (
+                    self._update_db_summary(),
+                    self.status_label.configure(text="Carga completada", text_color="green"),
+                    self.after(2000, lambda: self.status_label.configure(text="", text_color="gray"))
+                ))
+        threading.Thread(target=timeout_check, daemon=True).start()
+        
+        # Ajustar tamaños iniciales después de que la ventana se renderice
+        self.after(100, self._adjust_button_sizes)
 
         # Navegación + tamaños + checks
         self._nav_history = []
@@ -411,6 +532,7 @@ class XboxGameLookupApp(ctk.CTk):
         self._current_entries = []
         self._filter_job = None
         self._checked_paths = set()
+        self._user_changed_folder = False  # Rastrea si el usuario cambió manualmente la carpeta
 
         self._update_nav_buttons()
 
@@ -570,41 +692,93 @@ class XboxGameLookupApp(ctk.CTk):
         self.selector_idioma.pack(side="left")
         self.selector_idioma.set({"es":"Español","en":"English","pt":"Português"}.get(self.idioma_actual,"Español"))
 
-        right = ctk.CTkFrame(frame_top, fg_color="transparent"); right.pack(side="right")
-        # Selector de método de copia
-        ctk.CTkLabel(right, text=f"🚚 {self.traducir('metodo_copia')}:").pack(side="left", padx=(0,6))
+        # Frame derecho con botones organizados en múltiples filas
+        right = ctk.CTkFrame(frame_top, fg_color="transparent")
+        right.pack(side="right")
+        
+        # Fila 1: Método de copia y botones de lista
+        ctk.CTkLabel(right, text=f"🚚 {self.traducir('metodo_copia')}:").grid(row=0, column=0, padx=(0,6), pady=2, sticky="w")
         self.copy_method_var = ctk.StringVar(value=self.copy_method)
         self.copy_method_menu = ctk.CTkOptionMenu(
             right,
             values=[ "auto", "explorer", "internal" ],
             variable=self.copy_method_var,
             command=self._on_change_copy_method,
-            width=140
+            width=120
         )
-        self.copy_method_menu.pack(side="left", padx=(0,12))
+        self.copy_method_menu.grid(row=0, column=1, padx=(0,6), pady=2, sticky="w")
+        
+        self.btn_limpiar_lista = ctk.CTkButton(right, text="🗑️ Limpiar lista", command=self._limpiar_lista_cargada, width=110)
+        self.btn_limpiar_lista.grid(row=0, column=2, padx=(6, 6), pady=2, sticky="w")
+        self.btn_paste_list = ctk.CTkButton(right, text="📋 Pegar lista", command=self._pegar_lista_dialog, width=110)
+        self.btn_paste_list.grid(row=0, column=3, padx=(6, 6), pady=2, sticky="w")
+        self.btn_cargar_lista = ctk.CTkButton(right, text="📁 Cargar lista", command=self._cargar_lista, width=110)
+        self.btn_cargar_lista.grid(row=0, column=4, padx=(6, 6), pady=2, sticky="w")
+        
+        # Fila 2: Botones de JSON y carpeta
+        self.btn_limpiar = ctk.CTkButton(right, text=f"🧹 {self.traducir('limpiar_db')}", command=self._limpiar_db, width=110)
+        self.btn_limpiar.grid(row=1, column=0, padx=(6, 6), pady=2, sticky="w")
+        self.btn_cargar = ctk.CTkButton(right, text=f"📥 {self.traducir('cargar_json')}", command=self._cargar_json, width=110)
+        self.btn_cargar.grid(row=1, column=1, padx=(6, 6), pady=2, sticky="w")
+        self.btn_add_root = ctk.CTkButton(right, text=f"📂 {self.traducir('agregar_carpeta')}", command=self._add_scan_root, width=110)
+        self.btn_add_root.grid(row=1, column=2, padx=(6, 6), pady=2, sticky="w")
+        
+        # Guardar anchos originales de los botones superiores
+        self._top_button_widths = {
+            'copy_method_menu': 120,
+            'btn_limpiar_lista': 110,
+            'btn_paste_list': 110,
+            'btn_cargar_lista': 110,
+            'btn_limpiar': 110,
+            'btn_cargar': 110,
+            'btn_add_root': 110,
+        }
 
-        self.btn_limpiar = ctk.CTkButton(right, text=self.traducir("limpiar_db"), command=self._limpiar_db)
-        self.btn_limpiar.pack(side="right", padx=(6, 10))
-        self.btn_cargar = ctk.CTkButton(right, text=self.traducir("cargar_json"), command=self._cargar_json)
-        self.btn_cargar.pack(side="right", padx=(6, 6))
-        self.btn_add_root = ctk.CTkButton(right, text=self.traducir("agregar_carpeta"), command=self._add_scan_root)
-        self.btn_add_root.pack(side="right")
-
-        self.label_entrada = ctk.CTkLabel(self, text=self.traducir("ingresa_texto")); self.label_entrada.pack(pady=(10, 0))
-        self.entry = ctk.CTkEntry(self, placeholder_text="Ej: 4D530AA4 o Forza Horizon", width=780)
-        self.entry.pack(pady=5); self.entry.bind("<Return>", self._buscar_todo)
-        self.boton_buscar = ctk.CTkButton(self, text=self.traducir("buscar"), command=self._buscar_todo); self.boton_buscar.pack(pady=8)
+        # Frame para entrada de búsqueda (responsivo)
+        search_frame = ctk.CTkFrame(self, fg_color="transparent")
+        search_frame.pack(fill="x", padx=10, pady=(10, 0))
+        self.label_entrada = ctk.CTkLabel(search_frame, text=self.traducir("ingresa_texto"))
+        self.label_entrada.pack(pady=(0, 5))
+        entry_frame = ctk.CTkFrame(search_frame, fg_color="transparent")
+        entry_frame.pack(fill="x", pady=5)
+        self.entry = ctk.CTkEntry(entry_frame, placeholder_text="Ej: 4D530AA4 o Forza Horizon")
+        self.entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        self.entry.bind("<Return>", self._buscar_todo)
+        self.boton_buscar = ctk.CTkButton(entry_frame, text=f"🔍 {self.traducir('buscar')}", command=self._buscar_todo)
+        self.boton_buscar.pack(side="right")
 
         self.status_label = ctk.CTkLabel(self, text="", fg_color="transparent"); self.status_label.pack(pady=(0, 6))
-        self.db_summary = ctk.CTkLabel(self, text="", fg_color="transparent"); self.db_summary.pack(pady=(0, 10))
+        
+        # Resumen de base de datos con opción de colapsar
+        summary_frame = ctk.CTkFrame(self, fg_color="transparent")
+        summary_frame.pack(fill="x", padx=10, pady=(0, 5))
+        
+        self.summary_collapsed = ctk.BooleanVar(value=False)
+        self.summary_toggle = ctk.CTkButton(
+            summary_frame, 
+            text="📊", 
+            width=30, 
+            height=25,
+            command=lambda: self._toggle_summary()
+        )
+        self.summary_toggle.pack(side="left", padx=(0, 5))
+        
+        self.db_summary = ctk.CTkLabel(summary_frame, text="", fg_color="transparent", anchor="w")
+        self.db_summary.pack(side="left", fill="x", expand=True)
 
-        # Tabla Title IDs
+        # Tabla Title IDs (altura reducida para dar más espacio al explorador)
         self.frame_title = ctk.CTkFrame(self); self.frame_title.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        self.label_title = ctk.CTkLabel(self.frame_title, text=self.traducir("title_ids")); self.label_title.pack(anchor="w")
+        title_header = ctk.CTkFrame(self.frame_title, fg_color="transparent")
+        title_header.pack(fill="x", padx=5, pady=5)
+        self.label_title = ctk.CTkLabel(title_header, text=self.traducir("title_ids"), font=ctk.CTkFont(size=14, weight="bold"))
+        self.label_title.pack(side="left")
+        self.title_hint = ctk.CTkLabel(title_header, text="💡 Busca un juego arriba para ver resultados aquí", 
+                                      text_color="gray", font=ctk.CTkFont(size=11))
+        self.title_hint.pack(side="right", padx=10)
 
         wrap_titles = ctk.CTkFrame(self.frame_title, fg_color="transparent"); wrap_titles.pack(fill="both", expand=True)
         columns_title = ("title_id","name","system")
-        self.tree_title_ids = ttk.Treeview(wrap_titles, columns=columns_title, show="headings", height=12, selectmode="browse")
+        self.tree_title_ids = ttk.Treeview(wrap_titles, columns=columns_title, show="headings", height=8, selectmode="browse")
         for col in columns_title:
             self.tree_title_ids.heading(col, text=self.traducir("col_"+col))
             self.tree_title_ids.column(col, width=520 if col=="name" else 160, stretch=(col=="name"))
@@ -621,27 +795,70 @@ class XboxGameLookupApp(ctk.CTk):
         # Explorador
         self.frame_explorer = ctk.CTkFrame(self); self.frame_explorer.pack(fill="both", expand=True, padx=10, pady=(0, 12))
         header = ctk.CTkFrame(self.frame_explorer, fg_color="transparent"); header.pack(fill="x", padx=4, pady=(6, 4))
-        ctk.CTkLabel(header, text=self.traducir("explorador")).pack(side="left", padx=(2, 8))
-        self.path_label = ctk.CTkLabel(header, text=f"{self.traducir('ruta')} -"); self.path_label.pack(side="left")
+        
+        # Primera fila: Título e información (todo en una línea)
+        header_info = ctk.CTkFrame(header, fg_color="transparent")
+        header_info.pack(fill="x", pady=(0, 4))
+        explorer_title = ctk.CTkLabel(header_info, text=self.traducir("explorador"), font=ctk.CTkFont(size=14, weight="bold"))
+        explorer_title.pack(side="left", padx=(2, 8))
+        self.path_label = ctk.CTkLabel(header_info, text=f"{self.traducir('ruta')} -"); self.path_label.pack(side="left")
         # ← Contador de seleccionados | marcados
-        self.counts_label = ctk.CTkLabel(header, text="  |  0/0"); self.counts_label.pack(side="left", padx=(8, 0))
+        self.counts_label = ctk.CTkLabel(header_info, text="  |  0/0"); self.counts_label.pack(side="left", padx=(8, 0))
+        # Hint para el explorador
+        self.explorer_hint = ctk.CTkLabel(header_info, text="💡 Agrega una carpeta arriba para navegar", 
+                                       text_color="gray", font=ctk.CTkFont(size=11))
+        self.explorer_hint.pack(side="left", padx=(10, 0))
 
-        hdr_right = ctk.CTkFrame(header, fg_color="transparent"); hdr_right.pack(side="right")
-        # Botones de navegación
-        self.btn_back = ctk.CTkButton(hdr_right, text=self.traducir("atras"), width=90, command=self._nav_back); self.btn_back.pack(side="right", padx=(6,4))
-        self.btn_forward = ctk.CTkButton(hdr_right, text=self.traducir("adelante"), width=90, command=self._nav_forward); self.btn_forward.pack(side="right", padx=(6,4))
-        self.btn_up = ctk.CTkButton(hdr_right, text=self.traducir("subir"), width=100, command=self._go_up); self.btn_up.pack(side="right", padx=(6,4))
-        self.btn_open_explorer = ctk.CTkButton(hdr_right, text=self.traducir("abrir_explorer"), width=140, command=self._open_current_in_explorer); self.btn_open_explorer.pack(side="right", padx=(6,4))
-        self.btn_change_folder = ctk.CTkButton(hdr_right, text=self.traducir("cambiar_carpeta"), width=120, command=self._change_browser_folder); self.btn_change_folder.pack(side="right", padx=(6,4))
-        # Copiar selección y marcados
-        self.btn_copy_rows = ctk.CTkButton(hdr_right, text=self.traducir("copiar_seleccion"), width=140, command=self._copy_selected_rows_browser)
-        self.btn_copy_rows.pack(side="right", padx=(6,4))
-        self.btn_mark_all = ctk.CTkButton(hdr_right, text=self.traducir("marcar_visibles"), width=130, command=self._mark_visible_rows)
-        self.btn_mark_all.pack(side="right", padx=(6,4))
-        self.btn_unmark_all = ctk.CTkButton(hdr_right, text=self.traducir("desmarcar_visibles"), width=150, command=self._unmark_visible_rows)
-        self.btn_unmark_all.pack(side="right", padx=(6,4))
-        self.btn_copy_marked = ctk.CTkButton(hdr_right, text=self.traducir("copiar_marcados"), width=140, command=self._copy_checked_items_from_browser)
-        self.btn_copy_marked.pack(side="right", padx=(6,4))
+        # Segunda fila y siguientes: Botones del explorador - organizados de 4 en 4, alineados a la derecha
+        buttons_frame = ctk.CTkFrame(self.frame_explorer, fg_color="transparent")
+        buttons_frame.pack(fill="x", padx=4, pady=(0, 4))
+        
+        # Frame para alinear botones a la derecha
+        buttons_container = ctk.CTkFrame(buttons_frame, fg_color="transparent")
+        buttons_container.pack(side="right")
+        
+        # Fila 1: Navegación básica (4 botones)
+        self.btn_back = ctk.CTkButton(buttons_container, text=f"⬅️ {self.traducir('atras')}", width=90, command=self._nav_back)
+        self.btn_back.grid(row=0, column=0, padx=(6,4), pady=2)
+        self.btn_forward = ctk.CTkButton(buttons_container, text=f"➡️ {self.traducir('adelante')}", width=90, command=self._nav_forward)
+        self.btn_forward.grid(row=0, column=1, padx=(6,4), pady=2)
+        self.btn_up = ctk.CTkButton(buttons_container, text=f"⬆️ {self.traducir('subir')}", width=100, command=self._go_up)
+        self.btn_up.grid(row=0, column=2, padx=(6,4), pady=2)
+        self.btn_open_explorer = ctk.CTkButton(buttons_container, text=f"📂 {self.traducir('abrir_explorer')}", width=120, command=self._open_current_in_explorer)
+        self.btn_open_explorer.grid(row=0, column=3, padx=(6,4), pady=2)
+        
+        # Fila 2: Navegación y acciones (4 botones)
+        self.btn_change_folder = ctk.CTkButton(buttons_container, text=f"🔄 {self.traducir('cambiar_carpeta')}", width=120, command=self._change_browser_folder)
+        self.btn_change_folder.grid(row=1, column=0, padx=(6,4), pady=2)
+        self.btn_select_all = ctk.CTkButton(buttons_container, text=f"✅ {self.traducir('seleccionar_todo')}", width=120, command=self._select_all_files)
+        self.btn_select_all.grid(row=1, column=1, padx=(6,4), pady=2)
+        self.btn_mark_all = ctk.CTkButton(buttons_container, text=f"☑️ {self.traducir('marcar_visibles')}", width=120, command=self._mark_visible_rows)
+        self.btn_mark_all.grid(row=1, column=2, padx=(6,4), pady=2)
+        self.btn_unmark_all = ctk.CTkButton(buttons_container, text=f"☐ {self.traducir('desmarcar_visibles')}", width=120, command=self._unmark_visible_rows)
+        self.btn_unmark_all.grid(row=1, column=3, padx=(6,4), pady=2)
+        
+        # Fila 3: Acciones de copia (3 botones)
+        self.btn_copy_rows = ctk.CTkButton(buttons_container, text=f"📋 {self.traducir('copiar_seleccion')}", width=120, command=self._copy_selected_rows_browser)
+        self.btn_copy_rows.grid(row=2, column=0, padx=(6,4), pady=2)
+        self.btn_copy_marked = ctk.CTkButton(buttons_container, text=f"📦 {self.traducir('copiar_marcados')}", width=120, command=self._copy_checked_items_from_browser)
+        self.btn_copy_marked.grid(row=2, column=1, padx=(6,4), pady=2)
+        self.btn_limpiar_seleccion = ctk.CTkButton(buttons_container, text=f"🗑️ {self.traducir('limpiar_seleccion')}", width=120, command=self._limpiar_lista_cargada)
+        self.btn_limpiar_seleccion.grid(row=2, column=2, padx=(6,4), pady=2)
+        
+        # Guardar anchos originales de los botones del explorador
+        self._explorer_button_widths = {
+            'btn_back': 90,
+            'btn_forward': 90,
+            'btn_up': 100,
+            'btn_open_explorer': 120,
+            'btn_change_folder': 120,
+            'btn_copy_rows': 120,
+            'btn_select_all': 120,
+            'btn_mark_all': 120,
+            'btn_unmark_all': 120,
+            'btn_limpiar_seleccion': 120,
+            'btn_copy_marked': 120,
+        }
 
         # Filtro
         filter_bar = ctk.CTkFrame(self.frame_explorer, fg_color="transparent"); filter_bar.pack(fill="x", padx=6, pady=(0,6))
@@ -651,30 +868,28 @@ class XboxGameLookupApp(ctk.CTk):
         self.files_filter_entry.pack(side="left", padx=(0,6))
         self.files_filter_entry.bind("<Return>", lambda e: self._apply_files_filter())
         self.files_filter_entry.bind("<KeyRelease>", lambda e: self._apply_files_filter(debounce=True))
-        self.btn_filter = ctk.CTkButton(filter_bar, text=self.traducir("aplicar_filtro"), width=90, command=self._apply_files_filter)
+        self.btn_filter = ctk.CTkButton(filter_bar, text=f"🔍 {self.traducir('aplicar_filtro')}", width=90, command=self._apply_files_filter)
         self.btn_filter.pack(side="left", padx=(0,6))
-        self.btn_filter_clear = ctk.CTkButton(filter_bar, text=self.traducir("limpiar_filtro"), width=90, command=self._clear_files_filter)
+        self.btn_filter_clear = ctk.CTkButton(filter_bar, text=f"🧹 {self.traducir('limpiar_filtro')}", width=90, command=self._clear_files_filter)
         self.btn_filter_clear.pack(side="left")
-        self.btn_cargar_lista = ctk.CTkButton(right, text="Cargar lista", command=self._cargar_lista)
-        self.btn_cargar_lista.pack(side="right", padx=(6, 6))
-        self.btn_paste_list = ctk.CTkButton(right, text="Pegar lista", command=self._pegar_lista_dialog)
-        self.btn_paste_list.pack(side="right", padx=(6, 6))
 
-        # Tabla de archivos (con columna de check)
+        # Tabla de archivos (con columna de check y nombre de juego)
         wrap_files = ctk.CTkFrame(self.frame_explorer, fg_color="transparent"); wrap_files.pack(fill="both", expand=True)
-        columns_files = ("mark","name","type","size","modified","path")
+        columns_files = ("mark","name","game_name","type","size","modified","path")
         self.tree_files = ttk.Treeview(wrap_files, columns=columns_files, show="headings", height=12, selectmode="extended")
-        self.tree_files["displaycolumns"] = ("mark","name","type","size","modified")
+        self.tree_files["displaycolumns"] = ("mark","name","game_name","type","size","modified")
 
         self.tree_files.heading("mark", text=self.traducir("col_sel"))
         self.tree_files.heading("name", text=self.traducir("nombre"))
+        self.tree_files.heading("game_name", text="Juego")
         self.tree_files.heading("type", text=self.traducir("tipo"))
         self.tree_files.heading("size", text=self.traducir("tamano"))
         self.tree_files.heading("modified", text=self.traducir("modificado"))
         self.tree_files.heading("path", text="Path")
 
         self.tree_files.column("mark", width=60, stretch=False, anchor="center")
-        self.tree_files.column("name", width=560, stretch=True)
+        self.tree_files.column("name", width=300, stretch=True)
+        self.tree_files.column("game_name", width=260, stretch=True)
         self.tree_files.column("type", width=140, stretch=False)
         self.tree_files.column("size", width=120, stretch=False, anchor="e")
         self.tree_files.column("modified", width=160, stretch=False)
@@ -696,29 +911,30 @@ class XboxGameLookupApp(ctk.CTk):
 
     def _update_ui_texts(self):
         self.label_entrada.configure(text=self.traducir("ingresa_texto"))
-        self.boton_buscar.configure(text=self.traducir("buscar"))
+        self.boton_buscar.configure(text=f"🔍 {self.traducir('buscar')}")
         self.switch.configure(text=self.traducir("modo_oscuro"))
         self.idioma_menu_label.configure(text=f"🌐 {self.traducir('idioma')}:")
         # etiquetas del método de copia (mostrar texto amistoso en tooltip rápido)
         method = self.copy_method_var.get()
         self.copy_method_menu.configure(values=["auto","explorer","internal"])
-        self.btn_cargar.configure(text=self.traducir("cargar_json"))
-        self.btn_limpiar.configure(text=self.traducir("limpiar_db"))
-        self.btn_add_root.configure(text=self.traducir("agregar_carpeta"))
+        self.btn_cargar.configure(text=f"📥 {self.traducir('cargar_json')}")
+        self.btn_limpiar.configure(text=f"🧹 {self.traducir('limpiar_db')}")
+        self.btn_add_root.configure(text=f"📂 {self.traducir('agregar_carpeta')}")
         self.label_title.configure(text=self.traducir("title_ids"))
-        self.btn_back.configure(text=self.traducir("atras"))
-        self.btn_forward.configure(text=self.traducir("adelante"))
-        self.btn_up.configure(text=self.traducir("subir"))
-        self.btn_open_explorer.configure(text=self.traducir("abrir_explorer"))
-        self.btn_change_folder.configure(text=self.traducir("cambiar_carpeta"))
-        self.btn_copy_rows.configure(text=self.traducir("copiar_seleccion"))
-        self.btn_copy_marked.configure(text=self.traducir("copiar_marcados"))
-        self.btn_mark_all.configure(text=self.traducir("marcar_visibles"))
-        self.btn_unmark_all.configure(text=self.traducir("desmarcar_visibles"))
+        self.btn_back.configure(text=f"⬅️ {self.traducir('atras')}")
+        self.btn_forward.configure(text=f"➡️ {self.traducir('adelante')}")
+        self.btn_up.configure(text=f"⬆️ {self.traducir('subir')}")
+        self.btn_open_explorer.configure(text=f"📂 {self.traducir('abrir_explorer')}")
+        self.btn_change_folder.configure(text=f"🔄 {self.traducir('cambiar_carpeta')}")
+        self.btn_copy_rows.configure(text=f"📋 {self.traducir('copiar_seleccion')}")
+        self.btn_copy_marked.configure(text=f"📦 {self.traducir('copiar_marcados')}")
+        self.btn_select_all.configure(text=f"✅ {self.traducir('seleccionar_todo')}")
+        self.btn_mark_all.configure(text=f"☑️ {self.traducir('marcar_visibles')}")
+        self.btn_unmark_all.configure(text=f"☐ {self.traducir('desmarcar_visibles')}")
         self.path_label.configure(text=f"{self.traducir('ruta')} -")
         self.files_filter_entry.configure(placeholder_text=self.traducir("filtro_placeholder"))
-        self.btn_filter.configure(text=self.traducir("aplicar_filtro"))
-        self.btn_filter_clear.configure(text=self.traducir("limpiar_filtro"))
+        self.btn_filter.configure(text=f"🔍 {self.traducir('aplicar_filtro')}")
+        self.btn_filter_clear.configure(text=f"🧹 {self.traducir('limpiar_filtro')}")
         self.tree_files.heading("mark", text=self.traducir("col_sel"))
         self.tree_files.heading("name", text=self.traducir("nombre"))
         self.tree_files.heading("type", text=self.traducir("tipo"))
@@ -726,6 +942,68 @@ class XboxGameLookupApp(ctk.CTk):
         self.tree_files.heading("modified", text=self.traducir("modificado"))
         # refrescar contador
         self._update_counts()
+
+    def _on_window_resize(self, event=None):
+        """Ajusta el tamaño de los botones cuando la ventana se redimensiona"""
+        if event and event.widget != self:
+            return
+        
+        if self._resize_job:
+            self.after_cancel(self._resize_job)
+        
+        # Debounce: esperar 100ms después del último evento de redimensionamiento
+        self._resize_job = self.after(100, self._adjust_button_sizes)
+    
+    def _adjust_button_sizes(self):
+        """Ajusta el tamaño de los botones según el ancho de la ventana"""
+        try:
+            window_width = self.winfo_width()
+            if window_width < 100:  # Aún no se ha renderizado completamente
+                return
+            
+            # Ancho de referencia (1200px es el tamaño inicial)
+            reference_width = 1200
+            # Ancho mínimo para mantener funcionalidad (800px)
+            min_width = 800
+            
+            # Calcular factor de escala (1.0 cuando es >= reference_width, menor cuando es más pequeño)
+            if window_width >= reference_width:
+                scale = 1.0
+            elif window_width <= min_width:
+                scale = 0.65  # Reducir a 65% del tamaño original
+            else:
+                # Escala lineal entre min_width y reference_width
+                scale = 0.65 + (0.35 * (window_width - min_width) / (reference_width - min_width))
+            
+            # Ajustar botones del explorador
+            if hasattr(self, '_explorer_button_widths'):
+                for btn_name, original_width in self._explorer_button_widths.items():
+                    if hasattr(self, btn_name):
+                        btn = getattr(self, btn_name)
+                        new_width = max(int(original_width * scale), 60)  # Mínimo 60px
+                        btn.configure(width=new_width)
+            
+            # Ajustar botones superiores
+            if hasattr(self, 'copy_method_menu'):
+                original_width = self._top_button_widths.get('copy_method_menu', 120)
+                new_width = max(int(original_width * scale), 80)
+                self.copy_method_menu.configure(width=new_width)
+            
+            # Ajustar otros botones superiores
+            top_buttons = [
+                'btn_limpiar_lista', 'btn_paste_list', 'btn_cargar_lista',
+                'btn_limpiar', 'btn_cargar', 'btn_add_root'
+            ]
+            for btn_name in top_buttons:
+                if hasattr(self, btn_name):
+                    btn = getattr(self, btn_name)
+                    original_width = self._top_button_widths.get(btn_name, 110)
+                    new_width = max(int(original_width * scale), 70)
+                    btn.configure(width=new_width)
+                    
+        except Exception as e:
+            # Silenciar errores durante el redimensionamiento
+            pass
 
     def _on_change_copy_method(self, value):
         # value: "auto" | "explorer" | "internal"
@@ -751,14 +1029,33 @@ class XboxGameLookupApp(ctk.CTk):
         self._update_db_summary()
         if loaded: self.status_label.configure(text=self.traducir("busqueda_completada"), text_color="green")
 
+    def _toggle_summary(self):
+        """Alterna entre resumen completo y compacto"""
+        if not hasattr(self, 'summary_collapsed'):
+            return
+        self.summary_collapsed.set(not self.summary_collapsed.get())
+        self._update_db_summary()
+    
     def _update_db_summary(self):
         files = len(_loaded_files)
         rows  = len(_items_by_key)
         by_sys = summarize_by_system()
         tid_paths = sum(len(v) for v in getattr(self, "_paths_by_tid", {}).values()) if hasattr(self, "_paths_by_tid") else 0
         roots = len(getattr(self, "_scan_roots", []) or [])
-        extra = f" | Carpetas origen: {roots} | Coincidencias TID↔ruta: {tid_paths}"
-        self.db_summary.configure(text=self.traducir("resumen_db").format(files=files, rows=rows, by_system=by_sys) + extra)
+        
+        # Resumen completo
+        full_text = self.traducir("resumen_db").format(files=files, rows=rows, by_system=by_sys) + f" | Carpetas origen: {roots} | Coincidencias TID↔ruta: {tid_paths}"
+        
+        # Resumen compacto (solo lo esencial)
+        compact_text = f"📁 {files} JSON | 📊 {rows} juegos | 🎮 {by_sys.split('|')[0].strip() if '|' in by_sys else by_sys} | 📂 {roots} carpetas | 🔗 {tid_paths} rutas"
+        
+        # Mostrar según estado
+        if hasattr(self, 'summary_collapsed') and self.summary_collapsed.get():
+            self.db_summary.configure(text=compact_text)
+            self.summary_toggle.configure(text="📊")
+        else:
+            self.db_summary.configure(text=full_text)
+            self.summary_toggle.configure(text="📊")
 
     # ---------- búsqueda local ----------
     def _buscar_todo(self, event=None):
@@ -767,6 +1064,9 @@ class XboxGameLookupApp(ctk.CTk):
             messagebox.showerror(self.traducir("error"), self.traducir("ingresa_texto")); return
 
         for item in self.tree_title_ids.get_children(): self.tree_title_ids.delete(item)
+        # Ocultar hint cuando hay búsqueda
+        if hasattr(self, 'title_hint'):
+            self.title_hint.pack_forget()
         self.status_label.configure(text=self.traducir("cargando"), text_color="orange"); self.update_idletasks()
         try:
             results = []
@@ -780,10 +1080,18 @@ class XboxGameLookupApp(ctk.CTk):
                         if count >= limit: break
                 results = sorted(results, key=lambda it: (it["name"].lower(), it["system"]))
             if not results:
-                self.status_label.configure(text=self.traducir("no_results_found"), text_color="orange"); return
+                self.status_label.configure(text=self.traducir("no_results_found"), text_color="orange")
+                # Mostrar hint si no hay resultados
+                if hasattr(self, 'title_hint'):
+                    self.title_hint.configure(text="❌ No se encontraron resultados. Intenta con otro término.")
+                    self.title_hint.pack(side="right", padx=10)
+                return
             for it in results:
                 self.tree_title_ids.insert("", "end", values=(it["title_id"], it["name"], it["system"]))
             self.status_label.configure(text=self.traducir("busqueda_completada"), text_color="green")
+            # Ocultar hint cuando hay resultados
+            if hasattr(self, 'title_hint'):
+                self.title_hint.pack_forget()
         except Exception as e:
             messagebox.showerror(self.traducir("error"), f"{self.traducir('error_busqueda')}\n{e}")
             self.status_label.configure(text=self.traducir("error_busqueda"), text_color="red")
@@ -798,40 +1106,63 @@ class XboxGameLookupApp(ctk.CTk):
         self._scan_root(path); self._update_db_summary()
         self.status_label.configure(text=self.traducir("carpeta_indexada"), text_color="green")
 
-    def _scan_root(self, root):
+    def _scan_root(self, root, recursive=True):
+        """
+        Escanea una carpeta raíz e indexa los juegos encontrados.
+        Si recursive=False, solo escanea el nivel actual (no recursivo).
+        """
         if not hasattr(self, "_paths_by_tid"):
             self._paths_by_tid = {}
         if not hasattr(self, "_paths_by_name"):
             self._paths_by_name = {}
 
-        # Primera pasada: indexar por Title ID
-        for dirpath, _, dirnames in os.walk(root):
-            base = os.path.basename(dirpath)
-            m = re.search(r'([0-9A-Fa-f]{8})', base)
-            if m:
-                tid = m.group(1).upper()
-                self._paths_by_tid.setdefault(tid, set()).add(dirpath)
-            
-            for d in dirnames:
-                if re.fullmatch(r'[0-9A-Fa-f]{8}', d):
-                    tid = d.upper()
-                    self._paths_by_tid.setdefault(tid, set()).add(os.path.join(dirpath, d))
+        if recursive:
+            # Escaneo recursivo completo (para carpetas raíz agregadas manualmente)
+            # Primera pasada: indexar por Title ID
+            for dirpath, _, dirnames in os.walk(root):
+                base = os.path.basename(dirpath)
+                m = re.search(r'([0-9A-Fa-f]{8})', base)
+                if m:
+                    tid = m.group(1).upper()
+                    self._paths_by_tid.setdefault(tid, set()).add(dirpath)
+                
+                for d in dirnames:
+                    if re.fullmatch(r'[0-9A-Fa-f]{8}', d):
+                        tid = d.upper()
+                        self._paths_by_tid.setdefault(tid, set()).add(os.path.join(dirpath, d))
 
-        # Segunda pasada: indexar por nombre de juego para una mejor búsqueda
-        for it in _items_by_key.values():
-            tid = it["title_id"]
-            norm_name = norm_text(it["name"])
-            
-            # Buscar en las carpetas indexadas por TID para añadir también el nombre
-            if tid in self._paths_by_tid:
-                for path in self._paths_by_tid[tid]:
-                    self._paths_by_name.setdefault(norm_name, set()).add(path)
-            
-            # Buscar en el árbol de directorios para una coincidencia con el nombre
-            for dirpath, _, _ in os.walk(root):
-                norm_dir_name = norm_text(os.path.basename(dirpath))
-                if norm_name == norm_dir_name or norm_name in norm_dir_name:
-                    self._paths_by_name.setdefault(norm_name, set()).add(dirpath)
+            # Segunda pasada: indexar por nombre de juego para una mejor búsqueda
+            for it in _items_by_key.values():
+                tid = it["title_id"]
+                norm_name = norm_text(it["name"])
+                
+                # Buscar en las carpetas indexadas por TID para añadir también el nombre
+                if tid in self._paths_by_tid:
+                    for path in self._paths_by_tid[tid]:
+                        self._paths_by_name.setdefault(norm_name, set()).add(path)
+                
+                # Buscar en el árbol de directorios para una coincidencia con el nombre
+                for dirpath, _, _ in os.walk(root):
+                    norm_dir_name = norm_text(os.path.basename(dirpath))
+                    if norm_name == norm_dir_name or norm_name in norm_dir_name:
+                        self._paths_by_name.setdefault(norm_name, set()).add(dirpath)
+        else:
+            # Escaneo solo del nivel actual (rápido para cuando se pega lista)
+            try:
+                for item in os.listdir(root):
+                    item_path = os.path.join(root, item)
+                    if os.path.isdir(item_path):
+                        # Buscar Title ID en el nombre de la carpeta
+                        m = re.search(r'([0-9A-Fa-f]{8})', item)
+                        if m:
+                            tid = m.group(1).upper()
+                            self._paths_by_tid.setdefault(tid, set()).add(item_path)
+                        
+                        # Indexar por nombre normalizado
+                        item_norm = norm_text(item)
+                        self._paths_by_name.setdefault(item_norm, set()).add(item_path)
+            except Exception:
+                pass
 
         self._update_db_summary()
 
@@ -889,22 +1220,25 @@ class XboxGameLookupApp(ctk.CTk):
         up_enabled = bool(folder and os.path.dirname(folder.rstrip("\\/")) and os.path.dirname(folder.rstrip("\\/")) != folder)
         self.btn_up.configure(state=("normal" if up_enabled else "disabled"))
 
-    def _enter_folder(self, folder):
+    def _enter_folder(self, folder, user_initiated=False):
         folder = os.path.normpath(folder)
         if not self._nav_history or self._nav_history[self._nav_index] != folder:
             self._nav_history = self._nav_history[: self._nav_index + 1]
             self._nav_history.append(folder); self._nav_index += 1
         self._list_folder(folder); self._update_nav_buttons()
+        # Si el usuario navegó manualmente, marcar como cambio manual
+        if user_initiated:
+            self._user_changed_folder = True
 
     def _nav_back(self):
         if self._nav_index > 0:
             self._nav_index -= 1
-            self._list_folder(self._nav_history[self._nav_index]); self._update_nav_buttons()
+            self._enter_folder(self._nav_history[self._nav_index], user_initiated=True)
 
     def _nav_forward(self):
         if self._nav_index < len(self._nav_history) - 1:
             self._nav_index += 1
-            self._list_folder(self._nav_history[self._nav_index]); self._update_nav_buttons()
+            self._enter_folder(self._nav_history[self._nav_index], user_initiated=True)
 
     # ---------- Explorador ----------
     def _browse_selected_game(self):
@@ -915,7 +1249,21 @@ class XboxGameLookupApp(ctk.CTk):
             messagebox.showinfo(self.traducir("info"), self.traducir("no_carpeta_tid")); return
         src = self._choose_path_dialog(paths, title=self.traducir("ver_archivos"))
         if not src: return
-        self._enter_folder(src)
+        self._enter_folder(src, user_initiated=True)
+
+    def _get_game_name_for_path(self, path):
+        """Obtiene el nombre del juego basado en el Title ID encontrado en la ruta"""
+        # Buscar Title ID en el nombre de la carpeta o en el path
+        base = os.path.basename(path)
+        m = re.search(r'([0-9A-Fa-f]{8})', base)
+        if m:
+            tid = m.group(1).upper()
+            # Buscar en el índice de TIDs
+            if tid in _index_tid:
+                # Tomar el primer resultado (puede haber múltiples por consola)
+                game_item = _index_tid[tid][0]
+                return game_item.get("name", "")
+        return ""
 
     def _list_folder(self, folder):
         try: self._size_thread_stop.set()
@@ -924,6 +1272,9 @@ class XboxGameLookupApp(ctk.CTk):
 
         self.current_folder = folder
         self.path_label.configure(text=f"{self.traducir('ruta')} {folder}")
+        # Ocultar hint cuando hay una carpeta abierta
+        if hasattr(self, 'explorer_hint'):
+            self.explorer_hint.pack_forget()
 
         entries = []
         try:
@@ -939,9 +1290,13 @@ class XboxGameLookupApp(ctk.CTk):
                     if is_dir and e.path in self._folder_size_cache:
                         size = self._folder_size_cache[e.path]
                     ftype = "Carpeta" if is_dir else "Archivo"
-                    entries.append((e.name, ftype, size, mtime, e.path))
+                    # Obtener nombre del juego si es una carpeta
+                    game_name = self._get_game_name_for_path(e.path) if is_dir else ""
+                    # Normalizar el path para asegurar coincidencias exactas
+                    path_norm = os.path.normpath(e.path)
+                    entries.append((e.name, game_name, ftype, size, mtime, path_norm))
 
-            entries.sort(key=lambda x: (x[1] != "Carpeta", x[0].lower()))
+            entries.sort(key=lambda x: (x[2] != "Carpeta", x[0].lower()))
             self._current_entries = entries
             self._render_files(entries)
             self._clear_files_filter()
@@ -951,20 +1306,6 @@ class XboxGameLookupApp(ctk.CTk):
         except Exception as e:
             messagebox.showerror(self.traducir("error"), str(e))
 
-    def _render_files(self, entries):
-        for iid in self.tree_files.get_children(): self.tree_files.delete(iid)
-        self._files_row_by_path.clear()
-
-        for name, ftype, size, mtime, path in entries:
-            mark = "☑" if path in self._checked_paths else "☐"
-            if size is None and os.path.isdir(path):
-                size_text = self.traducir("calculando")
-            else:
-                size_text = fmt_size(size if isinstance(size, (int, float)) else 0)
-            iid = self.tree_files.insert("", "end",
-                values=(mark, name, ftype, size_text, fmt_mtime(mtime), path))
-            self._files_row_by_path[path] = iid
-        self._update_counts()
 
     def _apply_files_filter(self, debounce=False):
         if debounce:
@@ -979,9 +1320,9 @@ class XboxGameLookupApp(ctk.CTk):
         if not q: self._render_files(entries); return
 
         filtered = []
-        for name, ftype, size, mtime, path in entries:
-            if (q in name.lower()) or (q in ftype.lower()) or (q in path.lower()):
-                filtered.append((name, ftype, size, mtime, path))
+        for name, game_name, ftype, size, mtime, path in entries:
+            if (q in name.lower()) or (q in game_name.lower()) or (q in ftype.lower()) or (q in path.lower()):
+                filtered.append((name, game_name, ftype, size, mtime, path))
         self._render_files(filtered)
 
     def _clear_files_filter(self):
@@ -1013,12 +1354,14 @@ class XboxGameLookupApp(ctk.CTk):
         if not row: return "break"
         vals = self.tree_files.item(row, "values")
         if not vals: return "break"
-        current_mark, name, ftype, size_text, mod, path = vals
+        # Valores: mark, name, game_name, type, size, modified, path
+        path = vals[-1]  # path es siempre el último
+        path_norm = os.path.normpath(path)
         # toggle
-        if path in self._checked_paths:
-            self._checked_paths.remove(path); new_mark = "☐"
+        if path_norm in self._checked_paths:
+            self._checked_paths.remove(path_norm); new_mark = "☐"
         else:
-            self._checked_paths.add(path); new_mark = "☑"
+            self._checked_paths.add(path_norm); new_mark = "☑"
         self.tree_files.set(row, "mark", new_mark)
         self._update_counts()
         return "break"  # evita seleccionar fila al hacer clic en el check
@@ -1028,7 +1371,8 @@ class XboxGameLookupApp(ctk.CTk):
             vals = self.tree_files.item(row, "values")
             if not vals: continue
             path = vals[-1]
-            self._checked_paths.add(path)
+            path_norm = os.path.normpath(path)
+            self._checked_paths.add(path_norm)
             self.tree_files.set(row, "mark", "☑")
         self._update_counts()
 
@@ -1037,18 +1381,52 @@ class XboxGameLookupApp(ctk.CTk):
             vals = self.tree_files.item(row, "values")
             if not vals: continue
             path = vals[-1]
-            if path in self._checked_paths: self._checked_paths.remove(path)
+            path_norm = os.path.normpath(path)
+            if path_norm in self._checked_paths: self._checked_paths.remove(path_norm)
             self.tree_files.set(row, "mark", "☐")
         self._update_counts()
+
+    def _select_all_files(self):
+        """Selecciona todas las filas visibles y las marca con check"""
+        all_items = self.tree_files.get_children()
+        if not all_items:
+            return
+        # Seleccionar todas las filas
+        self.tree_files.selection_set(all_items)
+        # Marcar todas con check
+        for row in all_items:
+            vals = self.tree_files.item(row, "values")
+            if not vals: continue
+            path = vals[-1]
+            path_norm = os.path.normpath(path)
+            self._checked_paths.add(path_norm)
+            self.tree_files.set(row, "mark", "☑")
+        self._update_counts()
+
+    def _limpiar_lista_cargada(self):
+        """Limpia todos los checks y reinicia la vista del explorador"""
+        # Limpiar todos los checks
+        self._checked_paths.clear()
+        # Refrescar la vista actual si hay entradas
+        if getattr(self, "_current_entries", None):
+            self._render_files(self._current_entries)
+        # Limpiar selección
+        self.tree_files.selection_remove(self.tree_files.selection())
+        # Resetear el flag de cambio manual
+        self._user_changed_folder = False
+        # Actualizar contadores
+        self._update_counts()
+        self.status_label.configure(text="Lista limpiada", text_color="green")
 
     def _open_or_enter(self):
         sel = self.tree_files.focus()
         if not sel: return
         vals = self.tree_files.item(sel, "values")
         if not vals: return
-        _mark, _name, ftype, _sz, _mt, path = vals
+        # Valores: mark, name, game_name, type, size, modified, path
+        path = vals[-1]  # path es siempre el último
         try:
-            if os.path.isdir(path): self._enter_folder(path)
+            if os.path.isdir(path): self._enter_folder(path, user_initiated=True)
             else: os.startfile(path)
         except Exception as e:
             messagebox.showerror(self.traducir("error"), str(e))
@@ -1076,7 +1454,7 @@ class XboxGameLookupApp(ctk.CTk):
         folder = getattr(self, "current_folder", None)
         if not folder: return
         parent = os.path.dirname(folder.rstrip("\\/"))
-        if parent and parent != folder: self._enter_folder(parent)
+        if parent and parent != folder: self._enter_folder(parent, user_initiated=True)
 
     def _open_current_in_explorer(self):
         folder = getattr(self, "current_folder", None)
@@ -1086,7 +1464,8 @@ class XboxGameLookupApp(ctk.CTk):
 
     def _change_browser_folder(self):
         folder = filedialog.askdirectory(title=self.traducir("cambiar_carpeta"))
-        if folder: self._enter_folder(folder)
+        if folder:
+            self._enter_folder(folder, user_initiated=True)
 
     # ---------- Worker: tamaños de carpeta ----------
     def _start_dirsize_worker(self, entries, folder, stop_event: threading.Event):
@@ -1101,7 +1480,7 @@ class XboxGameLookupApp(ctk.CTk):
             return total
 
         def worker():
-            for _name, _ftype, size, _mt, path in entries:
+            for _name, _game_name, _ftype, size, _mt, path in entries:
                 if stop_event.is_set(): return
                 if not os.path.isdir(path): continue
                 if size is not None: continue
@@ -1121,7 +1500,7 @@ class XboxGameLookupApp(ctk.CTk):
     def _copy_selected_rows_browser(self):
         """
         Copia lo que esté seleccionado en la tabla de archivos (self.tree_files).
-        Filtra rutas inexistentes antes de invocar el copiador.
+        Muestra una ventana de confirmación antes de copiar.
         """
         rows = self.tree_files.selection()
         if not rows:
@@ -1142,16 +1521,225 @@ class XboxGameLookupApp(ctk.CTk):
             messagebox.showinfo(self.traducir("info"), self.traducir("ninguno_marcado"))
             return
 
+        # Mostrar ventana de confirmación
+        confirmed_items = self._show_copy_confirmation_dialog(items)
+        if not confirmed_items:
+            return
+
         dst_root = filedialog.askdirectory(title=self.traducir("elige_destino"))
         if not dst_root:
             return
 
-        self._copy_items_with_progress(items, dest_base=dst_root, keep_names=True, include_top_dir=True)
+        self._copy_items_with_progress(confirmed_items, dest_base=dst_root, keep_names=True, include_top_dir=True)
+
+    def _show_copy_confirmation_dialog(self, items):
+        """
+        Muestra una ventana de confirmación con los juegos seleccionados.
+        Permite desmarcar algunos antes de copiar.
+        Retorna la lista de items marcados para copiar, o None si se cancela.
+        """
+        if not items:
+            return None
+        
+        # Preparar datos: Title ID, Nombre, Tamaño, Path
+        game_data = []
+        for path in items:
+            if not os.path.exists(path):
+                continue
+            
+            # Obtener Title ID del nombre de la carpeta
+            base = os.path.basename(path)
+            tid = ""
+            m = re.search(r'([0-9A-Fa-f]{8})', base)
+            if m:
+                tid = m.group(1).upper()
+            
+            # Obtener nombre del juego
+            game_name = ""
+            if tid and tid in _index_tid:
+                game_name = _index_tid[tid][0].get("name", "")
+            elif not game_name:
+                game_name = self._get_game_name_for_path(path)
+            
+            # Calcular tamaño (usar cache si está disponible, sino calcular)
+            total_size = 0
+            if os.path.isdir(path):
+                if path in self._folder_size_cache:
+                    total_size = self._folder_size_cache[path]
+                else:
+                    # Usar tamaño de "Calculando..." como placeholder, se calculará después
+                    total_size = -1  # Marcador para calcular después
+            else:
+                try:
+                    total_size = os.path.getsize(path)
+                except:
+                    total_size = 0
+            
+            game_data.append({
+                'tid': tid or "N/A",
+                'name': game_name or base,
+                'size': total_size,
+                'path': path,
+                'selected': True
+            })
+        
+        if not game_data:
+            return None
+        
+        # Crear ventana de confirmación
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Confirmar copia")
+        dlg.geometry("900x600")
+        dlg.grab_set()
+        
+        # Título y resumen
+        total_size = sum(g['size'] for g in game_data if g['size'] >= 0)
+        total_size_str = fmt_size(total_size) if total_size > 0 else "Calculando..."
+        ctk.CTkLabel(dlg, text=f"Juegos seleccionados para copiar ({len(game_data)}):", 
+                    font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(10, 5))
+        header_label = ctk.CTkLabel(dlg, text=f"Tamaño total: {total_size_str}", 
+                    font=ctk.CTkFont(size=12))
+        header_label.pack(pady=(0, 10))
+        
+        # Frame para la tabla con scroll
+        table_frame = ctk.CTkFrame(dlg)
+        table_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        
+        # Treeview para mostrar los juegos
+        columns = ("sel", "tid", "name", "size")
+        tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=15, selectmode="none")
+        tree.heading("sel", text="✓")
+        tree.heading("tid", text="Title ID")
+        tree.heading("name", text="Nombre del juego")
+        tree.heading("size", text="Tamaño")
+        
+        tree.column("sel", width=50, anchor="center")
+        tree.column("tid", width=120, anchor="center")
+        tree.column("name", width=500, anchor="w")
+        tree.column("size", width=120, anchor="e")
+        
+        # Scrollbars
+        sb_y = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+        sb_x = ttk.Scrollbar(table_frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=sb_y.set, xscrollcommand=sb_x.set)
+        
+        tree.grid(row=0, column=0, sticky="nsew")
+        sb_y.grid(row=0, column=1, sticky="ns")
+        sb_x.grid(row=1, column=0, sticky="ew")
+        table_frame.grid_columnconfigure(0, weight=1)
+        table_frame.grid_rowconfigure(0, weight=1)
+        
+        # Insertar datos
+        row_ids = {}
+        items_to_calculate = []
+        for i, game in enumerate(game_data):
+            mark = "☑" if game['selected'] else "☐"
+            if game['size'] == -1:
+                size_str = "Calculando..."
+                items_to_calculate.append((i, game['path']))
+            else:
+                size_str = fmt_size(game['size'])
+            row_id = tree.insert("", "end", values=(mark, game['tid'], game['name'], size_str))
+            row_ids[row_id] = i
+        
+        # Calcular tamaños en segundo plano si es necesario
+        if items_to_calculate:
+            def calculate_sizes():
+                for idx, path in items_to_calculate:
+                    if not os.path.isdir(path):
+                        continue
+                    total = 0
+                    try:
+                        for root, dirs, files in os.walk(path):
+                            for f in files:
+                                try:
+                                    total += os.path.getsize(os.path.join(root, f))
+                                except:
+                                    pass
+                    except:
+                        pass
+                    game_data[idx]['size'] = total
+                    # Actualizar en la UI
+                    for row_id, data_idx in row_ids.items():
+                        if data_idx == idx:
+                            tree.set(row_id, "size", fmt_size(total))
+                            # Actualizar tamaño total si está seleccionado
+                            if game_data[idx]['selected']:
+                                selected_size = sum(g['size'] for g in game_data if g['selected'] and g['size'] >= 0)
+                                dlg.after(0, lambda s=selected_size: total_label.configure(
+                                    text=f"Tamaño total seleccionado: {fmt_size(s)}"
+                                ))
+                                # Actualizar también el tamaño total en el header
+                                total_size = sum(g['size'] for g in game_data if g['size'] >= 0)
+                                dlg.after(0, lambda t=total_size: header_label.configure(
+                                    text=f"Tamaño total: {fmt_size(t)}"
+                                ))
+                            break
+            
+            threading.Thread(target=calculate_sizes, daemon=True).start()
+        
+        # Función para toggle de check
+        def toggle_check(event):
+            region = tree.identify("region", event.x, event.y)
+            if region != "cell":
+                return
+            col = tree.identify_column(event.x)
+            if col != "#1":  # Solo la primera columna (sel)
+                return
+            row = tree.identify_row(event.y)
+            if not row or row not in row_ids:
+                return
+            idx = row_ids[row]
+            game_data[idx]['selected'] = not game_data[idx]['selected']
+            new_mark = "☑" if game_data[idx]['selected'] else "☐"
+            tree.set(row, "sel", new_mark)
+            # Actualizar tamaño total seleccionado (solo contar los que tienen tamaño calculado)
+            selected_size = sum(g['size'] for g in game_data if g['selected'] and g['size'] >= 0)
+            if selected_size > 0:
+                total_label.configure(text=f"Tamaño total seleccionado: {fmt_size(selected_size)}")
+            else:
+                total_label.configure(text="Tamaño total seleccionado: Calculando...")
+            return "break"
+        
+        tree.bind("<Button-1>", toggle_check)
+        
+        # Label para tamaño total seleccionado
+        selected_size = sum(g['size'] for g in game_data if g['selected'] and g['size'] >= 0)
+        selected_size_str = fmt_size(selected_size) if selected_size > 0 else "Calculando..."
+        total_label = ctk.CTkLabel(dlg, text=f"Tamaño total seleccionado: {selected_size_str}", 
+                                   font=ctk.CTkFont(size=12))
+        total_label.pack(pady=(5, 10))
+        
+        # Botones
+        btn_frame = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_frame.pack(pady=(0, 10))
+        
+        result = {"confirmed": False, "items": []}
+        
+        def on_confirm():
+            result["items"] = [g['path'] for g in game_data if g['selected']]
+            result["confirmed"] = True
+            dlg.destroy()
+        
+        def on_cancel():
+            result["confirmed"] = False
+            dlg.destroy()
+        
+        ctk.CTkButton(btn_frame, text="Copiar seleccionados", command=on_confirm, 
+                     width=150).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="Cancelar", command=on_cancel, 
+                     width=120).pack(side="left", padx=5)
+        
+        dlg.wait_window()
+        
+        if result["confirmed"] and result["items"]:
+            return result["items"]
+        return None
 
     def _copy_checked_items_from_browser(self):
         """
         Copia TODO lo marcado (aunque no esté visible) usando el copiador nativo.
-        Filtra rutas inexistentes antes de invocar el copiador.
+        Muestra una ventana de confirmación antes de copiar.
         """
         if not self._checked_paths:
             messagebox.showinfo(self.traducir("info"), self.traducir("ninguno_marcado"))
@@ -1162,11 +1750,16 @@ class XboxGameLookupApp(ctk.CTk):
             messagebox.showinfo(self.traducir("info"), self.traducir("ninguno_marcado"))
             return
 
+        # Mostrar ventana de confirmación
+        confirmed_items = self._show_copy_confirmation_dialog(items)
+        if not confirmed_items:
+            return
+
         dst_root = filedialog.askdirectory(title=self.traducir("elige_destino"))
         if not dst_root:
             return
 
-        self._copy_items_with_progress(items, dest_base=dst_root, keep_names=True, include_top_dir=True)
+        self._copy_items_with_progress(confirmed_items, dest_base=dst_root, keep_names=True, include_top_dir=True)
 
     # ---- Implementación interna (tu diálogo de progreso propio)
     def _copy_items_with_progress_internal(self, sources, dest_base, keep_names=True, include_top_dir=True):
@@ -1531,16 +2124,19 @@ class XboxGameLookupApp(ctk.CTk):
         checked = self._checked_paths
         sep = os.sep
 
-        for name, ftype, size, mtime, path in entries:
+        for name, game_name, ftype, size, mtime, path in entries:
+            # Normalizar el path para comparación
+            path_norm = os.path.normpath(path)
             # ¿Está marcado este path exacto?
-            exact = path in checked
+            exact = path_norm in checked
             # ¿Contiene marcados en su interior? (útil cuando estamos en un padre)
             contains = False
             if not exact and os.path.isdir(path):
-                prefix = path.rstrip("\\/") + sep
+                prefix = path_norm.rstrip("\\/") + sep
                 # corta rápido en la primera coincidencia
                 for p in checked:
-                    if p.startswith(prefix):
+                    p_norm = os.path.normpath(p)
+                    if p_norm.startswith(prefix):
                         contains = True
                         break
 
@@ -1558,7 +2154,7 @@ class XboxGameLookupApp(ctk.CTk):
 
             iid = self.tree_files.insert(
                 "", "end",
-                values=(mark, name, ftype, size_text, fmt_mtime(mtime), path)
+                values=(mark, name, game_name, ftype, size_text, fmt_mtime(mtime), path)
             )
             self._files_row_by_path[path] = iid
 
@@ -1568,107 +2164,223 @@ class XboxGameLookupApp(ctk.CTk):
         """
         Procesa una lista pegada de juegos (separados por comas o saltos de línea),
         marca todas las carpetas encontradas en el explorador y muestra los faltantes.
+        Usa la carpeta actual del explorador como base de búsqueda.
+        Ejecuta el procesamiento en un hilo separado para no bloquear la UI.
         """
-        # 0) Asegura que la DB esté cargada y las raíces indexadas
-        if not _items_by_key:
-            load_default_jsons()
-            self._update_db_summary()
-
-        if not hasattr(self, "_paths_by_tid"):
-            self._paths_by_tid = {}
-        if not hasattr(self, "_paths_by_name"):
-            self._paths_by_name = {}
-
-        if not self._paths_by_tid and not self._paths_by_name:
-            for r in getattr(self, "_scan_roots", []) or []:
-                if os.path.isdir(r):
-                    self._scan_root(r)
-            self._update_db_summary()
-
         # 1) UI: estado "procesando"
         self.status_label.configure(text="Procesando lista...", text_color="orange")
         self.update_idletasks()
-
-        found_paths: set[str] = set()
-        missing_games: list[str] = []
-
-        try:
-            # 2) Parseo de lista: comas y/o saltos de línea
-            raw = list_content.replace("\r", "\n")
-            raw = raw.replace("\n", ",")
-            game_names = [n.strip() for n in raw.split(",") if n.strip()]
-            total_games = len(game_names)
-
-            # 3) Resolver rutas para cada nombre
-            for name in game_names:
-                norm_n = norm_text(name)
-                paths_found_for_name: set[str] = set()
-
-                # 3a) Match por nombre en índice de nombres -> TIDs
-                if _index_name:
-                    matching_tids = {it["title_id"] for nname, it in _index_name if norm_n in nname}
-                    for tid in matching_tids:
-                        paths_found_for_name.update(self._find_paths_for_tid(tid))
-
-                # 3b) Match directo en índice por nombre de carpeta (construido al escanear raíces)
-                if self._paths_by_name:
-                    # exacto
-                    if norm_n in self._paths_by_name:
-                        paths_found_for_name.update(self._paths_by_name[norm_n])
-                    else:
-                        # contiene (suave) — útil para listas con pequeñas variaciones
-                        for key_name, paths in self._paths_by_name.items():
-                            if norm_n in key_name:
-                                paths_found_for_name.update(paths)
-
-                if paths_found_for_name:
-                    found_paths.update(paths_found_for_name)
-                else:
-                    missing_games.append(name)
-
-        except Exception as e:
-            messagebox.showerror(self.traducir("error"), f"Error al procesar la lista:\n{e}")
-            self.status_label.configure(text=self.traducir("error"), text_color="red")
-            return
         
-        # 4) Actualiza los checks
-        self._checked_paths.clear()
-        self._checked_paths.update(found_paths)
-
-        # 🔄 refresca lo que esté en pantalla
-        if getattr(self, "_current_entries", None):
-            self._render_files(self._current_entries)
-        self._update_counts()
-
-        # 5) Abrir la *mejor* carpeta: el padre que agrupa más hallazgos
-        if found_paths:
+        def process_in_thread():
             try:
-                from collections import Counter
-                parents = [os.path.dirname(p.rstrip("\\/")) for p in found_paths]
-                # idealmente abre donde los hijos directos ya son los marcados
-                best_parent, _ = Counter(parents).most_common(1)[0]
-                if best_parent and os.path.isdir(best_parent):
-                    self._enter_folder(best_parent)
-            except Exception:
-                # fallback razonable
-                try:
-                    common = os.path.commonpath(list(found_paths))
-                    if not os.path.isdir(common):
-                        common = os.path.dirname(common)
-                    if common:
-                        self._enter_folder(common)
-                except Exception:
-                    if getattr(self, "_scan_roots", []):
-                        self._enter_folder(self._scan_roots[0])
+                # 0) Asegura que la DB esté cargada y las raíces indexadas
+                if not _items_by_key:
+                    load_default_jsons()
+                    self.after(0, self._update_db_summary)
 
-        # 6) Estado + faltantes
-        self.status_label.configure(
-            text=f"Procesados {len(game_names)} juegos. Se encontraron {len(found_paths)} carpetas.",
-            text_color="green" if found_paths else "orange"
-        )
-        self._update_counts()
-        if missing_games:
-            self.after(50, lambda: self._show_missing_games_dialog(missing_games))
+                if not hasattr(self, "_paths_by_tid"):
+                    self._paths_by_tid = {}
+                if not hasattr(self, "_paths_by_name"):
+                    self._paths_by_name = {}
+
+                # Obtener la carpeta actual del explorador
+                current_folder = getattr(self, "current_folder", None)
+                
+                # Si hay una carpeta actual, indexarla si no está ya indexada
+                if current_folder and os.path.isdir(current_folder):
+                    # Verificar si la carpeta actual está en las raíces escaneadas
+                    is_scanned = False
+                    if hasattr(self, "_scan_roots"):
+                        for root in self._scan_roots:
+                            if current_folder.startswith(root) or current_folder == root:
+                                is_scanned = True
+                                break
+                    
+                    # Si no está escaneada, escanear solo esta carpeta (solo nivel actual, rápido)
+                    if not is_scanned:
+                        # Escanear solo el nivel actual, no recursivamente (mucho más rápido)
+                        self.after(0, lambda: self.status_label.configure(
+                            text="Indexando carpeta actual...", text_color="orange"
+                        ))
+                        self._scan_root(current_folder, recursive=False)
+                        self.after(0, self._update_db_summary)
+                elif not self._paths_by_tid and not self._paths_by_name:
+                    # Si no hay carpeta actual y no hay índices, escanear las raíces guardadas
+                    for r in getattr(self, "_scan_roots", []) or []:
+                        if os.path.isdir(r):
+                            self._scan_root(r)
+                    self.after(0, self._update_db_summary)
+
+                found_paths: set[str] = set()
+                found_games: set[str] = set()  # Rastrear juegos únicos encontrados
+                missing_games: list[str] = []
+
+                # 2) Parseo de lista: comas y/o saltos de línea
+                raw = list_content.replace("\r", "\n")
+                raw = raw.replace("\n", ",")
+                game_names = [n.strip() for n in raw.split(",") if n.strip()]
+                total_games = len(game_names)
+
+                # 3) Resolver rutas para cada nombre
+                for i, name in enumerate(game_names):
+                    # Actualizar progreso cada 10 juegos
+                    if i % 10 == 0:
+                        self.after(0, lambda n=i, t=total_games: self.status_label.configure(
+                            text=f"Procesando lista... {n}/{t}", text_color="orange"
+                        ))
+                    
+                    norm_n = norm_text(name)
+                    name_words = norm_n.split()  # Definir una vez al inicio
+                    paths_found_for_name: set[str] = set()
+
+                    # 3a) Match por nombre en índice de nombres -> TIDs
+                    if _index_name:
+                        # Búsqueda más flexible: buscar si el nombre normalizado está contenido en el nombre del juego
+                        # o si alguna palabra clave del nombre está en el nombre del juego
+                        matching_tids = set()
+                        for nname, it in _index_name:
+                            # Coincidencia exacta o parcial
+                            if norm_n in nname or nname in norm_n:
+                                matching_tids.add(it["title_id"])
+                            # Si el nombre tiene múltiples palabras, buscar si todas están presentes
+                            elif len(name_words) > 1:
+                                if all(word in nname for word in name_words if len(word) > 2):
+                                    matching_tids.add(it["title_id"])
+                        
+                        for tid in matching_tids:
+                            paths_found_for_name.update(self._find_paths_for_tid(tid))
+
+                    # 3b) Match directo en índice por nombre de carpeta (construido al escanear raíces)
+                    if self._paths_by_name:
+                        # exacto
+                        if norm_n in self._paths_by_name:
+                            paths_found_for_name.update(self._paths_by_name[norm_n])
+                        else:
+                            # contiene (suave) — útil para listas con pequeñas variaciones
+                            for key_name, paths in self._paths_by_name.items():
+                                # Coincidencia exacta o parcial
+                                if norm_n in key_name or key_name in norm_n:
+                                    paths_found_for_name.update(paths)
+                                # Si el nombre tiene múltiples palabras, buscar si todas están presentes
+                                elif len(name_words) > 1:
+                                    if all(word in key_name for word in name_words if len(word) > 2):
+                                        paths_found_for_name.update(paths)
+                    
+                    # 3c) Búsqueda directa en la carpeta actual del explorador
+                    if current_folder and os.path.isdir(current_folder):
+                        # Buscar subdirectorios que coincidan con el nombre del juego
+                        try:
+                            for item in os.listdir(current_folder):
+                                item_path = os.path.join(current_folder, item)
+                                if os.path.isdir(item_path):
+                                    item_norm = norm_text(item)
+                                    # Coincidencia exacta o parcial
+                                    if norm_n == item_norm or norm_n in item_norm or item_norm in norm_n:
+                                        paths_found_for_name.add(item_path)
+                                    # Búsqueda por palabras clave
+                                    elif len(name_words) > 1:
+                                        item_words = item_norm.split()
+                                        if all(word in item_norm for word in name_words if len(word) > 2):
+                                            paths_found_for_name.add(item_path)
+                        except Exception:
+                            pass
+
+                    if paths_found_for_name:
+                        # Solo tomar el primer path encontrado para cada juego (evitar duplicados)
+                        first_path = sorted(list(paths_found_for_name))[0]
+                        # Normalizar el path para asegurar coincidencias exactas
+                        first_path = os.path.normpath(first_path)
+                        found_paths.add(first_path)
+                        found_games.add(name)  # Rastrear que este juego fue encontrado
+                    else:
+                        missing_games.append(name)
+
+                # 4) Actualizar UI en el hilo principal
+                self.after(0, lambda: self._apply_game_list_results(found_paths, missing_games, total_games, len(found_games)))
+                
+            except Exception as e:
+                self.after(0, lambda: (
+                    messagebox.showerror(self.traducir("error"), f"Error al procesar la lista:\n{e}"),
+                    self.status_label.configure(text=self.traducir("error"), text_color="red")
+                ))
+        
+        # Ejecutar en hilo separado
+        threading.Thread(target=process_in_thread, daemon=True).start()
+    
+    def _apply_game_list_results(self, found_paths: set[str], missing_games: list[str], total_games: int, found_games_count: int):
+        """Aplica los resultados del procesamiento de la lista en el hilo principal"""
+        try:
+            # 4) Actualiza los checks - normalizar todos los paths
+            self._checked_paths.clear()
+            # Normalizar todos los paths para asegurar coincidencias exactas
+            normalized_paths = {os.path.normpath(p) for p in found_paths}
+            self._checked_paths.update(normalized_paths)
+
+            # 🔄 refresca lo que esté en pantalla para mostrar los checks marcados
+            current_folder = getattr(self, "current_folder", None)
+            if current_folder and getattr(self, "_current_entries", None):
+                # Refrescar la vista actual para mostrar los checks
+                self._render_files(self._current_entries)
+            self._update_counts()
+
+            # 5) Navegar a la carpeta que contiene los archivos encontrados
+            # Priorizar la carpeta actual si hay archivos encontrados ahí
+            if found_paths:
+                # Verificar si alguno de los paths encontrados está en la carpeta actual
+                paths_in_current = False
+                if current_folder:
+                    current_norm = os.path.normpath(current_folder)
+                    for path in found_paths:
+                        path_norm = os.path.normpath(path)
+                        # Si el path está en la carpeta actual o es la carpeta actual
+                        if path_norm == current_norm or path_norm.startswith(current_norm + os.sep):
+                            paths_in_current = True
+                            break
+                
+                # Si hay paths en la carpeta actual, solo refrescar la vista
+                if paths_in_current and current_folder:
+                    # Refrescar la lista para que se muestren los checks marcados
+                    self._list_folder(current_folder)
+                # Si no hay paths en la carpeta actual Y el usuario NO cambió manualmente, navegar
+                elif not self._user_changed_folder:
+                    try:
+                        from collections import Counter
+                        parents = [os.path.dirname(p.rstrip("\\/")) for p in found_paths]
+                        # idealmente abre donde los hijos directos ya son los marcados
+                        best_parent, _ = Counter(parents).most_common(1)[0]
+                        if best_parent and os.path.isdir(best_parent):
+                            self._user_changed_folder = False  # Reset antes de cambiar programáticamente
+                            self._enter_folder(best_parent)
+                            self._user_changed_folder = False  # Mantener en False después
+                    except Exception:
+                        # fallback razonable
+                        try:
+                            common = os.path.commonpath(list(found_paths))
+                            if not os.path.isdir(common):
+                                common = os.path.dirname(common)
+                            if common:
+                                self._user_changed_folder = False
+                                self._enter_folder(common)
+                                self._user_changed_folder = False
+                        except Exception:
+                            if getattr(self, "_scan_roots", []):
+                                self._user_changed_folder = False
+                                self._enter_folder(self._scan_roots[0])
+                                self._user_changed_folder = False
+                # Si el usuario cambió manualmente y no hay paths en la carpeta actual, solo refrescar
+                elif current_folder:
+                    self._list_folder(current_folder)
+
+            # 6) Estado + faltantes
+            self.status_label.configure(
+                text=f"Procesados {total_games} juegos. Se encontraron {found_games_count} juegos ({len(found_paths)} carpetas).",
+                text_color="green" if found_paths else "orange"
+            )
+            self._update_counts()
+            if missing_games:
+                self.after(50, lambda: self._show_missing_games_dialog(missing_games))
+        except Exception as e:
+            self.status_label.configure(text=f"Error al aplicar resultados: {e}", text_color="red")
 
 
     # Esta es la versión actualizada de _cargar_lista para que use la nueva función de procesamiento
