@@ -633,7 +633,17 @@ class XboxGameLookupApp(ctk.CTk):
     def _cambiar_cliente(self):
         """Abre un diálogo para cambiar el identificador del cliente"""
         dlg = ctk.CTkToplevel(self)
-        dlg.title(self.traducir("cambiar_cliente"))
+        # Obtener traducciones de forma segura - usar el idioma actual de la aplicación
+        idioma_actual = self.idioma_actual if hasattr(self, 'idioma_actual') and self.idioma_actual in traducciones else 'es'
+        
+        # Obtener textos traducidos
+        titulo = traducciones[idioma_actual].get("cambiar_cliente", "Cambiar Cliente")
+        texto_label = traducciones[idioma_actual].get("ingresa_cliente", "Ingresa el identificador del cliente:")
+        texto_ok = traducciones[idioma_actual].get("ok", "OK")
+        texto_cancelar = traducciones[idioma_actual].get("cancelar", "Cancelar")
+        texto_guardado = traducciones[idioma_actual].get("cliente_guardado", "Cliente guardado")
+        
+        dlg.title(titulo)
         dlg.geometry("400x150")
         dlg.grab_set()
         dlg.transient(self)
@@ -645,7 +655,7 @@ class XboxGameLookupApp(ctk.CTk):
         dlg.geometry(f"400x150+{x}+{y}")
         
         # Label
-        label = ctk.CTkLabel(dlg, text=self.traducir("ingresa_cliente"), font=ctk.CTkFont(size=12))
+        label = ctk.CTkLabel(dlg, text=texto_label, font=ctk.CTkFont(size=12))
         label.pack(pady=(20, 10))
         
         # Entry
@@ -667,17 +677,21 @@ class XboxGameLookupApp(ctk.CTk):
             dlg.destroy()
             if nuevo_cliente:
                 self.status_label.configure(
-                    text=f"{self.traducir('cliente_guardado')}: {nuevo_cliente}", 
+                    text=f"{texto_guardado}: {nuevo_cliente}", 
                     text_color="green"
                 )
                 self.after(3000, lambda: self.status_label.configure(text="", text_color="gray"))
         
-        btn_guardar = ctk.CTkButton(btn_frame, text=self.traducir("ok"), command=guardar, width=100)
+        btn_guardar = ctk.CTkButton(btn_frame, text=texto_ok, command=guardar, width=100)
         btn_guardar.pack(side="left", padx=5)
         
-        btn_cancelar = ctk.CTkButton(btn_frame, text=self.traducir("cancelar"), 
+        btn_cancelar = ctk.CTkButton(btn_frame, text=texto_cancelar, 
                                     command=dlg.destroy, width=100, fg_color="gray")
         btn_cancelar.pack(side="left", padx=5)
+        
+        # Bind Enter y Escape
+        entry.bind("<Return>", lambda e: guardar())
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
         
         # Permitir Enter para guardar
         entry.bind("<Return>", lambda e: guardar())
