@@ -70,3 +70,4 @@ Los iconos deben tener exactamente estos nombres:
 
 Una vez que agregues los iconos, la aplicación los cargará automáticamente al iniciar. Los botones mostrarán los iconos en lugar de los emojis/texto actual.
 
+

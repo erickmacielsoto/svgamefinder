@@ -37,11 +37,18 @@ import time
 from datetime import datetime
 from PIL import Image, ImageTk
 
+# -------------------- Módulos locales --------------------
+from config import CONFIG_FILE, get_app_root
+from translations import traducciones
+from utils import norm_text, fmt_size, fmt_mtime
+from ui_components import CTkTooltip
+from game_data import (
+    clear_db, load_json_file, load_default_jsons, summarize_by_system,
+    get_loaded_files_count, get_items_count, search_by_tid, search_by_name,
+    get_index_tid, get_index_name, get_items_by_key
+)
 
-# -------------------- Config --------------------
-CONFIG_FILE = Path.home() / ".consulta_juegos_xbox_config.json"
 ctk.set_default_color_theme("blue")
-DEFAULT_JSON_GLOBS = ["*.json"]  # json(s) locales que se cargan automáticamente
 
 # -------------------- Traducciones --------------------
 traducciones = {
@@ -318,243 +325,6 @@ traducciones = {
     }
 }
 
-# -------------------- Utilidades de texto --------------------
-def strip_accents(s: str) -> str:
-    if not isinstance(s, str):
-        s = str(s or "")
-    nfkd = unicodedata.normalize("NFKD", s)
-    return "".join(ch for ch in nfkd if not unicodedata.combining(ch))
-
-def norm_text(s: str) -> str:
-    return re.sub(r"\s+", " ", strip_accents(s)).strip().lower()
-
-def guess_system_from_filename(path: str) -> str | None:
-    name = os.path.basename(path).lower()
-    if "series" in name: return "Xbox Series"
-    if re.search(r"\bone\b", name): return "Xbox One"
-    if "360" in name: return "Xbox 360"
-    if "classic" in name or "og" in name: return "Xbox (OG)"
-    if "xbox" in name: return "Xbox (OG)"
-    return None
-
-def normalize_item(raw: dict, default_system: str | None) -> dict | None:
-    if not isinstance(raw, dict): return None
-    lower = {str(k).lower(): v for k, v in raw.items()}
-    tid = lower.get("titleid") or lower.get("title_id") or lower.get("tid") or lower.get("id")
-    if tid is None: return None
-    if isinstance(tid, int): tid = f"{tid:08X}"
-    tid = str(tid).strip().upper()
-    if not tid: return None
-    name = str(lower.get("title") or lower.get("name") or "").strip()
-    sys_val = lower.get("system") or lower.get("platform") or lower.get("console") or lower.get("consola")
-    if isinstance(sys_val, str):
-        systems = [s.strip() for s in sys_val.split(",") if s.strip()]
-    elif isinstance(sys_val, list):
-        systems = [str(s).strip() for s in sys_val if str(s).strip()]
-    else:
-        systems = []
-    system = systems[0] if systems else (default_system or "Desconocido")
-    return {"title_id": tid, "name": name, "system": system}
-
-# -------------------- Índices en memoria --------------------
-_loaded_files: list[str] = []
-_items_by_key: dict[tuple, dict] = {}
-_index_tid: dict[str, list[dict]] = {}
-_index_name: list[tuple[str, dict]] = []
-
-def _app_root() -> str:
-    # Directorio del programa (EXE o .py)
-    if getattr(sys, "frozen", False):
-        # PyInstaller
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
-
-def clear_db():
-    _loaded_files.clear(); _items_by_key.clear(); _index_tid.clear(); _index_name.clear()
-
-def add_items(items: list[dict]):
-    for it in items:
-        key = (it["title_id"], it["system"])
-        if key in _items_by_key: continue
-        _items_by_key[key] = it
-        _index_tid.setdefault(it["title_id"], []).append(it)
-        _index_name.append((norm_text(it["name"]), it))
-
-def load_json_file(path: str):
-    default_system = guess_system_from_filename(path)
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    raw_items = data["items"] if isinstance(data, dict) and "items" in data else data
-    if not isinstance(raw_items, list):
-        raise ValueError("Formato JSON no soportado: se esperaba lista o {'items': [...]}.")
-
-    add_items([it for it in (normalize_item(r, default_system) for r in raw_items) if it])
-    _loaded_files.append(os.path.abspath(path))
-
-def load_default_jsons():
-    loaded_count = 0
-    
-    # 1) Buscar en la carpeta 'bd' del directorio de la aplicación
-    base = Path(_app_root())
-    bd_path = base / "bd"
-    if bd_path.is_dir():
-        for pat in DEFAULT_JSON_GLOBS:
-            for fname in sorted(bd_path.glob(pat)):
-                absf = os.path.abspath(str(fname))
-                if absf in _loaded_files:
-                    continue
-                try:
-                    load_json_file(absf)
-                    loaded_count += 1
-                    print(f"Cargado: {os.path.basename(absf)}")
-                except Exception as e:
-                    print(f"Error cargando {absf}: {e}")
-    
-    # 2) Buscar en AppData del usuario (C:\Users\<Usuario>\AppData)
-    # Optimizado: solo buscar en el nivel raíz de cada carpeta para evitar escanear miles de archivos
-    # Con límite de tiempo para no bloquear la aplicación
-    try:
-        appdata_path = Path(os.environ.get('APPDATA', ''))
-        if appdata_path and appdata_path.is_dir():
-            # Buscar JSONs directamente en AppData y en subcarpetas comunes
-            # Solo en el nivel raíz para evitar escanear recursivamente
-            search_paths = [
-                appdata_path,  # C:\Users\<Usuario>\AppData\Roaming
-                appdata_path.parent / "Local",  # C:\Users\<Usuario>\AppData\Local
-                appdata_path.parent,  # C:\Users\<Usuario>\AppData
-            ]
-            
-            start_time = time.time()
-            max_search_time = 3.0  # Máximo 3 segundos buscando en AppData
-            
-            for search_path in search_paths:
-                # Verificar timeout
-                if time.time() - start_time > max_search_time:
-                    print(f"Timeout: búsqueda en AppData interrumpida después de {max_search_time}s")
-                    break
-                    
-                if not search_path.is_dir():
-                    continue
-                try:
-                    # Usar os.listdir con try/except para manejar errores rápidamente
-                    items = os.listdir(str(search_path))
-                    # Limitar a los primeros 1000 archivos para no tardar mucho
-                    for item in items[:1000]:
-                        if time.time() - start_time > max_search_time:
-                            break
-                        if not item.lower().endswith('.json'):
-                            continue
-                        fname = search_path / item
-                        if not fname.is_file():
-                            continue
-                        absf = os.path.abspath(str(fname))
-                        if absf in _loaded_files:
-                            continue
-                        try:
-                            load_json_file(absf)
-                            loaded_count += 1
-                            print(f"Cargado desde AppData: {os.path.basename(absf)}")
-                        except Exception as e:
-                            print(f"Error cargando {absf}: {e}")
-                except (PermissionError, OSError) as e:
-                    # Ignorar errores de permisos o acceso
-                    print(f"No se puede acceder a {search_path}: {e}")
-                    continue
-                except Exception as e:
-                    # Cualquier otro error, continuar
-                    print(f"Error en {search_path}: {e}")
-                    continue
-    except Exception as e:
-        print(f"Error buscando en AppData: {e}")
-    
-    if loaded_count > 0:
-        print(f"Precargados {loaded_count} archivo(s) JSON")
-    else:
-        print("No se encontraron archivos JSON para precargar")
-
-
-def summarize_by_system() -> str:
-    counts: dict[str, int] = {}
-    for it in _items_by_key.values():
-        counts[it["system"]] = counts.get(it["system"], 0) + 1
-    parts = [f'{sys}: {n}' for sys, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
-    return " | ".join(parts) if parts else "Sin datos"
-
-# -------------------- Helpers del explorador --------------------
-def fmt_size(n: int) -> str:
-    try: n = int(n)
-    except Exception: return "-"
-    for unit in ["B", "KB", "MB", "GB", "TB"]:
-        if n < 1024:
-            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
-        n /= 1024.0
-    return f"{n:.1f} PB"
-
-def fmt_mtime(ts: float) -> str:
-    try: return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
-    except Exception: return "-"
-
-# -------------------- Tooltip Class --------------------
-class CTkTooltip:
-    """Clase para crear tooltips (ayuda al hacer hover) en widgets de CustomTkinter"""
-    def __init__(self, widget, text, delay=500):
-        self.widget = widget
-        self.text = text
-        self.delay = delay
-        self.tooltip = None
-        self.job_id = None
-        self.widget.bind("<Enter>", self.on_enter)
-        self.widget.bind("<Leave>", self.on_leave)
-        self.widget.bind("<Motion>", self.on_motion)
-    
-    def on_enter(self, event=None):
-        self.schedule_tooltip()
-    
-    def on_leave(self, event=None):
-        self.unschedule_tooltip()
-        self.hide_tooltip()
-    
-    def on_motion(self, event=None):
-        self.unschedule_tooltip()
-        self.schedule_tooltip()
-    
-    def schedule_tooltip(self):
-        self.unschedule_tooltip()
-        self.job_id = self.widget.after(self.delay, self.show_tooltip)
-    
-    def unschedule_tooltip(self):
-        if self.job_id:
-            self.widget.after_cancel(self.job_id)
-            self.job_id = None
-    
-    def show_tooltip(self):
-        if self.tooltip:
-            return
-        
-        x = self.widget.winfo_rootx() + 25
-        y = self.widget.winfo_rooty() + 20
-        
-        self.tooltip = ctk.CTkToplevel(self.widget)
-        self.tooltip.wm_overrideredirect(True)
-        self.tooltip.wm_geometry(f"+{x}+{y}")
-        
-        label = ctk.CTkLabel(
-            self.tooltip,
-            text=self.text,
-            corner_radius=6,
-            fg_color=("gray70", "gray30"),
-            text_color=("gray10", "gray90"),
-            font=ctk.CTkFont(size=11),
-            padx=8,
-            pady=4
-        )
-        label.pack()
-    
-    def hide_tooltip(self):
-        if self.tooltip:
-            self.tooltip.destroy()
-            self.tooltip = None
-
 # -------------------- App --------------------
 class XboxGameLookupApp(ctk.CTk):
     def __init__(self):
@@ -564,7 +334,6 @@ class XboxGameLookupApp(ctk.CTk):
             try: self.iconbitmap(icon_path)
             except Exception: pass
 
-        self.title("SVXboxGamesFinder (Local) - By: @erickmacielsoto - Reviewed by: @jasontorresb")
         self.geometry("1200x880")
 
         # Preferencias
@@ -572,7 +341,9 @@ class XboxGameLookupApp(ctk.CTk):
         self.modo_oscuro_inicial = self._detectar_modo_oscuro_sistema()
         self.copy_method = "explorer"  # "auto" | "explorer" | "internal"
         self.mostrar_nombres_botones = True  # Por defecto mostrar nombres
+        self.cliente_id = ""  # Identificador del cliente
         self._cargar_config()
+        self._actualizar_titulo_ventana()  # Actualizar título con el identificador del cliente
         self._aplicar_estilo_treeview("dark" if self.modo_oscuro_inicial else "light")
         ctk.set_appearance_mode("dark" if self.modo_oscuro_inicial else "light")
         
@@ -668,7 +439,7 @@ class XboxGameLookupApp(ctk.CTk):
     def _load_icons(self):
         """Carga los iconos desde la carpeta 'icons' si existen"""
         self.icons = {}
-        icons_dir = Path(_app_root()) / "icons"
+        icons_dir = Path(get_app_root()) / "icons"
         
         if not icons_dir.exists():
             # Crear carpeta de ejemplo si no existe
@@ -760,7 +531,10 @@ class XboxGameLookupApp(ctk.CTk):
                     print(f"Error aplicando icono a {button_attr}: {e}")
 
     # ---------- traducción y preferencias ----------
-    def traducir(self, clave): return traducciones[self.idioma_actual].get(clave, f"MISSING_TRANSLATION_{clave}")
+    def traducir(self, clave): 
+        # Asegurarse de que el idioma existe, si no usar español por defecto
+        idioma = self.idioma_actual if self.idioma_actual in traducciones else 'es'
+        return traducciones[idioma].get(clave, f"MISSING_TRANSLATION_{clave}")
 
     def _guardar_config(self):
         config = {
@@ -769,6 +543,7 @@ class XboxGameLookupApp(ctk.CTk):
             "mostrar_nombres_botones": self.show_names_var.get() if hasattr(self, 'show_names_var') else True,
             "scan_roots": getattr(self, "_scan_roots", []),
             "copy_method": self.copy_method,
+            "cliente_id": getattr(self, "cliente_id", ""),
         }
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -788,6 +563,7 @@ class XboxGameLookupApp(ctk.CTk):
                 self._scan_roots = config.get("scan_roots", [])
                 if config.get("copy_method") in ("auto","explorer","internal"):
                     self.copy_method = config["copy_method"]
+                self.cliente_id = config.get("cliente_id", "")
             except Exception as e:
                 messagebox.showwarning(self.traducir("info"), f"Error al cargar configuración, usando valores predeterminados: {e}")
 
@@ -846,6 +622,67 @@ class XboxGameLookupApp(ctk.CTk):
             style.map("Treeview", background=[('selected','#3399FF')], foreground=[('selected','white')])
             style.configure("Treeview.Heading", background="#f0f0f0", foreground="black", font=(font_name, 11, 'bold'))
 
+    def _actualizar_titulo_ventana(self):
+        """Actualiza el título de la ventana incluyendo el identificador del cliente"""
+        titulo_base = "SVXboxGamesFinder (Local) - By: @erickmacielsoto - Reviewed by: @jasontorresb"
+        if self.cliente_id and self.cliente_id.strip():
+            self.title(f"[{self.cliente_id}] {titulo_base}")
+        else:
+            self.title(titulo_base)
+    
+    def _cambiar_cliente(self):
+        """Abre un diálogo para cambiar el identificador del cliente"""
+        dlg = ctk.CTkToplevel(self)
+        dlg.title(self.traducir("cambiar_cliente"))
+        dlg.geometry("400x150")
+        dlg.grab_set()
+        dlg.transient(self)
+        
+        # Centrar la ventana
+        dlg.update_idletasks()
+        x = (dlg.winfo_screenwidth() // 2) - (400 // 2)
+        y = (dlg.winfo_screenheight() // 2) - (150 // 2)
+        dlg.geometry(f"400x150+{x}+{y}")
+        
+        # Label
+        label = ctk.CTkLabel(dlg, text=self.traducir("ingresa_cliente"), font=ctk.CTkFont(size=12))
+        label.pack(pady=(20, 10))
+        
+        # Entry
+        entry_var = ctk.StringVar(value=self.cliente_id)
+        entry = ctk.CTkEntry(dlg, textvariable=entry_var, width=300, font=ctk.CTkFont(size=12))
+        entry.pack(pady=10)
+        entry.focus()
+        entry.select_range(0, "end")
+        
+        # Botones
+        btn_frame = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_frame.pack(pady=10)
+        
+        def guardar():
+            nuevo_cliente = entry_var.get().strip()
+            self.cliente_id = nuevo_cliente
+            self._actualizar_titulo_ventana()
+            self._guardar_config()
+            dlg.destroy()
+            if nuevo_cliente:
+                self.status_label.configure(
+                    text=f"{self.traducir('cliente_guardado')}: {nuevo_cliente}", 
+                    text_color="green"
+                )
+                self.after(3000, lambda: self.status_label.configure(text="", text_color="gray"))
+        
+        btn_guardar = ctk.CTkButton(btn_frame, text=self.traducir("ok"), command=guardar, width=100)
+        btn_guardar.pack(side="left", padx=5)
+        
+        btn_cancelar = ctk.CTkButton(btn_frame, text=self.traducir("cancelar"), 
+                                    command=dlg.destroy, width=100, fg_color="gray")
+        btn_cancelar.pack(side="left", padx=5)
+        
+        # Permitir Enter para guardar
+        entry.bind("<Return>", lambda e: guardar())
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
+    
     def _toggle_mode(self):
         ctk.set_appearance_mode("dark" if self.switch_var.get() else "light")
         self._aplicar_estilo_treeview("dark" if self.switch_var.get() else "light")
@@ -856,30 +693,36 @@ class XboxGameLookupApp(ctk.CTk):
         show_names = self.show_names_var.get()
         self.mostrar_nombres_botones = show_names
         
-        # Mapeo de botones a sus textos traducidos
+        # Obtener el idioma actual de forma segura
+        idioma_actual = getattr(self, 'idioma_actual', 'es')
+        if idioma_actual not in traducciones:
+            idioma_actual = 'es'
+        
+        # Mapeo de botones a sus textos traducidos (usar traducciones directamente)
+        # NOTA: Los botones con iconos de imagen NO deben tener emojis en el texto
         button_texts = {
-            # Botones superiores
-            'btn_limpiar_lista': self.traducir('limpiar_lista'),
-            'btn_paste_list': self.traducir('pegar_lista'),
-            'btn_cargar_lista': self.traducir('cargar_lista'),
-            'btn_limpiar': self.traducir('limpiar_db'),
-            'btn_cargar': self.traducir('cargar_json'),
-            'btn_add_root': self.traducir('agregar_carpeta'),
-            # Botones explorador
-            'btn_back': self.traducir('atras'),
-            'btn_forward': self.traducir('adelante'),
-            'btn_up': self.traducir('subir'),
-            'btn_open_explorer': self.traducir('abrir_explorer'),
-            'btn_change_folder': self.traducir('cambiar_carpeta'),
-            'btn_select_all': self.traducir('seleccionar_todo'),
-            'btn_mark_all': self.traducir('marcar_visibles'),
-            'btn_unmark_all': self.traducir('desmarcar_visibles'),
-            'btn_copy_rows': self.traducir('copiar_seleccion'),
-            'btn_copy_marked': self.traducir('copiar_marcados'),
-            'btn_limpiar_seleccion': self.traducir('limpiar_seleccion'),
-            'btn_filter': self.traducir('aplicar_filtro'),
-            'btn_filter_clear': self.traducir('limpiar_filtro'),
-            'boton_buscar': self.traducir('buscar'),
+            # Botones superiores (sin emojis porque tienen iconos de imagen)
+            'btn_limpiar_lista': traducciones[idioma_actual].get('limpiar_lista', 'Limpiar lista'),
+            'btn_paste_list': traducciones[idioma_actual].get('pegar_lista', 'Pegar lista'),
+            'btn_cargar_lista': traducciones[idioma_actual].get('cargar_lista', 'Cargar lista'),
+            'btn_limpiar': traducciones[idioma_actual].get('limpiar_db', 'Limpiar .json'),
+            'btn_cargar': traducciones[idioma_actual].get('cargar_json', 'Cargar .json'),
+            'btn_add_root': traducciones[idioma_actual].get('agregar_carpeta', 'Agregar carpeta'),
+            # Botones explorador (sin emojis porque tienen iconos de imagen)
+            'btn_back': traducciones[idioma_actual].get('atras', 'Atrás'),
+            'btn_forward': traducciones[idioma_actual].get('adelante', 'Adelante'),
+            'btn_up': traducciones[idioma_actual].get('subir', 'Subir nivel'),
+            'btn_open_explorer': traducciones[idioma_actual].get('abrir_explorer', 'Abrir en Explorer'),
+            'btn_change_folder': traducciones[idioma_actual].get('cambiar_carpeta', 'Cambiar…'),
+            'btn_select_all': traducciones[idioma_actual].get('seleccionar_todo', 'Seleccionar todo'),
+            'btn_mark_all': traducciones[idioma_actual].get('marcar_visibles', 'Marcar visibles'),
+            'btn_unmark_all': traducciones[idioma_actual].get('desmarcar_visibles', 'Desmarcar visibles'),
+            'btn_copy_rows': traducciones[idioma_actual].get('copiar_seleccion', 'Copiar selección'),
+            'btn_copy_marked': traducciones[idioma_actual].get('copiar_marcados', 'Copiar marcados'),
+            'btn_limpiar_seleccion': traducciones[idioma_actual].get('limpiar_seleccion', 'Limpiar selección'),
+            'btn_filter': traducciones[idioma_actual].get('aplicar_filtro', 'Buscar'),
+            'btn_filter_clear': traducciones[idioma_actual].get('limpiar_filtro', 'Limpiar'),
+            'boton_buscar': traducciones[idioma_actual].get('buscar', 'Buscar'),
         }
         
         for button_attr, text_key in button_texts.items():
@@ -1013,6 +856,13 @@ class XboxGameLookupApp(ctk.CTk):
                                                  command=self._cambiar_idioma)
         self.selector_idioma.pack(side="left")
         self.selector_idioma.set({"es":"Español","en":"English","pt":"Português"}.get(self.idioma_actual,"Español"))
+        
+        # Botón para cambiar identificador de cliente
+        cliente_text = traducciones.get(self.idioma_actual, traducciones['es']).get('cambiar_cliente', 'Cambiar Cliente')
+        self.btn_cliente = ctk.CTkButton(left, text=f"👤 {cliente_text}", 
+                                       command=self._cambiar_cliente, width=120)
+        self.btn_cliente.pack(side="left", padx=(10, 10))
+        CTkTooltip(self.btn_cliente, cliente_text)
 
         # Frame derecho con botones organizados en múltiples filas
         right = ctk.CTkFrame(frame_top, fg_color="transparent")
@@ -1034,26 +884,31 @@ class XboxGameLookupApp(ctk.CTk):
         BTN_PADX = (4, 4)
         BTN_PADY = 2
         
-        self.btn_limpiar_lista = ctk.CTkButton(right, text=self.traducir("limpiar_lista"), command=self._limpiar_lista_cargada, width=110)
+        # Obtener traducciones de forma segura
+        idioma_ini = getattr(self, 'idioma_actual', 'es')
+        if idioma_ini not in traducciones:
+            idioma_ini = 'es'
+        
+        self.btn_limpiar_lista = ctk.CTkButton(right, text=traducciones[idioma_ini].get("limpiar_lista", "Limpiar lista"), command=self._limpiar_lista_cargada, width=110)
         self.btn_limpiar_lista.grid(row=0, column=2, padx=BTN_PADX, pady=BTN_PADY, sticky="w")
-        CTkTooltip(self.btn_limpiar_lista, self.traducir("limpiar_lista"))
-        self.btn_paste_list = ctk.CTkButton(right, text=self.traducir("pegar_lista"), command=self._pegar_lista_dialog, width=110)
+        CTkTooltip(self.btn_limpiar_lista, traducciones[idioma_ini].get("limpiar_lista", "Limpiar lista"))
+        self.btn_paste_list = ctk.CTkButton(right, text=traducciones[idioma_ini].get("pegar_lista", "Pegar lista"), command=self._pegar_lista_dialog, width=110)
         self.btn_paste_list.grid(row=0, column=3, padx=BTN_PADX, pady=BTN_PADY, sticky="w")
-        CTkTooltip(self.btn_paste_list, self.traducir("pegar_lista"))
-        self.btn_cargar_lista = ctk.CTkButton(right, text=self.traducir("cargar_lista"), command=self._cargar_lista, width=110)
+        CTkTooltip(self.btn_paste_list, traducciones[idioma_ini].get("pegar_lista", "Pegar lista"))
+        self.btn_cargar_lista = ctk.CTkButton(right, text=traducciones[idioma_ini].get("cargar_lista", "Cargar lista"), command=self._cargar_lista, width=110)
         self.btn_cargar_lista.grid(row=0, column=4, padx=BTN_PADX, pady=BTN_PADY, sticky="w")
-        CTkTooltip(self.btn_cargar_lista, self.traducir("cargar_lista"))
+        CTkTooltip(self.btn_cargar_lista, traducciones[idioma_ini].get("cargar_lista", "Cargar lista"))
         
         # Fila 2: Botones de JSON y carpeta (alineados con la fila 1, empezando en columna 2)
-        self.btn_limpiar = ctk.CTkButton(right, text=f"🧹 {self.traducir('limpiar_db')}", command=self._limpiar_db, width=110)
+        self.btn_limpiar = ctk.CTkButton(right, text=f"🧹 {traducciones[idioma_ini].get('limpiar_db', 'Limpiar .json')}", command=self._limpiar_db, width=110)
         self.btn_limpiar.grid(row=1, column=2, padx=BTN_PADX, pady=BTN_PADY, sticky="w")
-        CTkTooltip(self.btn_limpiar, self.traducir("limpiar_db"))
-        self.btn_cargar = ctk.CTkButton(right, text=f"📥 {self.traducir('cargar_json')}", command=self._cargar_json, width=110)
+        CTkTooltip(self.btn_limpiar, traducciones[idioma_ini].get("limpiar_db", "Limpiar .json"))
+        self.btn_cargar = ctk.CTkButton(right, text=f"📥 {traducciones[idioma_ini].get('cargar_json', 'Cargar .json')}", command=self._cargar_json, width=110)
         self.btn_cargar.grid(row=1, column=3, padx=BTN_PADX, pady=BTN_PADY, sticky="w")
-        CTkTooltip(self.btn_cargar, self.traducir("cargar_json"))
-        self.btn_add_root = ctk.CTkButton(right, text=f"📂 {self.traducir('agregar_carpeta')}", command=self._add_scan_root, width=110)
+        CTkTooltip(self.btn_cargar, traducciones[idioma_ini].get("cargar_json", "Cargar .json"))
+        self.btn_add_root = ctk.CTkButton(right, text=f"📂 {traducciones[idioma_ini].get('agregar_carpeta', 'Agregar carpeta')}", command=self._add_scan_root, width=110)
         self.btn_add_root.grid(row=1, column=4, padx=BTN_PADX, pady=BTN_PADY, sticky="w")
-        CTkTooltip(self.btn_add_root, self.traducir("agregar_carpeta"))
+        CTkTooltip(self.btn_add_root, traducciones[idioma_ini].get("agregar_carpeta", "Agregar carpeta"))
         
         # Guardar anchos originales de los botones superiores
         self._top_button_widths = {
@@ -1064,6 +919,7 @@ class XboxGameLookupApp(ctk.CTk):
             'btn_limpiar': 110,
             'btn_cargar': 110,
             'btn_add_root': 110,
+            'btn_cliente': 120,
         }
 
         # Frame para entrada de búsqueda (responsivo)
@@ -1076,7 +932,7 @@ class XboxGameLookupApp(ctk.CTk):
         self.entry = ctk.CTkEntry(entry_frame, placeholder_text="Ej: 4D530AA4 o Forza Horizon")
         self.entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
         self.entry.bind("<Return>", self._buscar_todo)
-        self.boton_buscar = ctk.CTkButton(entry_frame, text=f"🔍 {self.traducir('buscar')}", command=self._buscar_todo)
+        self.boton_buscar = ctk.CTkButton(entry_frame, text=self.traducir('buscar'), command=self._buscar_todo)
         self.boton_buscar.pack(side="right")
         CTkTooltip(self.boton_buscar, self.traducir("buscar"))
 
@@ -1154,42 +1010,42 @@ class XboxGameLookupApp(ctk.CTk):
         EXPLORER_BTN_PADX = (4, 4)
         EXPLORER_BTN_PADY = 2
         
-        # Fila 1: Navegación básica (4 botones)
-        self.btn_back = ctk.CTkButton(buttons_container, text=f"⬅️ {self.traducir('atras')}", width=90, command=self._nav_back)
+        # Fila 1: Navegación básica (4 botones) - Sin emojis porque tienen iconos de imagen
+        self.btn_back = ctk.CTkButton(buttons_container, text=self.traducir('atras'), width=90, command=self._nav_back)
         self.btn_back.grid(row=0, column=0, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
         CTkTooltip(self.btn_back, self.traducir("atras"))  # Mostrar el nombre del botón en el tooltip
-        self.btn_forward = ctk.CTkButton(buttons_container, text=f"➡️ {self.traducir('adelante')}", width=90, command=self._nav_forward)
+        self.btn_forward = ctk.CTkButton(buttons_container, text=self.traducir('adelante'), width=90, command=self._nav_forward)
         self.btn_forward.grid(row=0, column=1, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
         CTkTooltip(self.btn_forward, self.traducir("adelante"))
-        self.btn_up = ctk.CTkButton(buttons_container, text=f"⬆️ {self.traducir('subir')}", width=100, command=self._go_up)
+        self.btn_up = ctk.CTkButton(buttons_container, text=self.traducir('subir'), width=100, command=self._go_up)
         self.btn_up.grid(row=0, column=2, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
         CTkTooltip(self.btn_up, self.traducir("subir"))
-        self.btn_open_explorer = ctk.CTkButton(buttons_container, text=f"📂 {self.traducir('abrir_explorer')}", width=120, command=self._open_current_in_explorer)
+        self.btn_open_explorer = ctk.CTkButton(buttons_container, text=self.traducir('abrir_explorer'), width=120, command=self._open_current_in_explorer)
         self.btn_open_explorer.grid(row=0, column=3, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
         CTkTooltip(self.btn_open_explorer, self.traducir("abrir_explorer"))
         
-        # Fila 2: Navegación y acciones (4 botones)
-        self.btn_change_folder = ctk.CTkButton(buttons_container, text=f"🔄 {self.traducir('cambiar_carpeta')}", width=120, command=self._change_browser_folder)
+        # Fila 2: Navegación y acciones (4 botones) - Sin emojis porque tienen iconos de imagen
+        self.btn_change_folder = ctk.CTkButton(buttons_container, text=self.traducir('cambiar_carpeta'), width=120, command=self._change_browser_folder)
         self.btn_change_folder.grid(row=1, column=0, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
         CTkTooltip(self.btn_change_folder, self.traducir("cambiar_carpeta"))
-        self.btn_select_all = ctk.CTkButton(buttons_container, text=f"✅ {self.traducir('seleccionar_todo')}", width=120, command=self._select_all_files)
+        self.btn_select_all = ctk.CTkButton(buttons_container, text=self.traducir('seleccionar_todo'), width=120, command=self._select_all_files)
         self.btn_select_all.grid(row=1, column=1, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
         CTkTooltip(self.btn_select_all, self.traducir("seleccionar_todo"))
-        self.btn_mark_all = ctk.CTkButton(buttons_container, text=f"☑️ {self.traducir('marcar_visibles')}", width=120, command=self._mark_visible_rows)
+        self.btn_mark_all = ctk.CTkButton(buttons_container, text=self.traducir('marcar_visibles'), width=120, command=self._mark_visible_rows)
         self.btn_mark_all.grid(row=1, column=2, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
         CTkTooltip(self.btn_mark_all, self.traducir("marcar_visibles"))
-        self.btn_unmark_all = ctk.CTkButton(buttons_container, text=f"☐ {self.traducir('desmarcar_visibles')}", width=120, command=self._unmark_visible_rows)
+        self.btn_unmark_all = ctk.CTkButton(buttons_container, text=self.traducir('desmarcar_visibles'), width=120, command=self._unmark_visible_rows)
         self.btn_unmark_all.grid(row=1, column=3, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
         CTkTooltip(self.btn_unmark_all, self.traducir("desmarcar_visibles"))
         
-        # Fila 3: Acciones de copia (3 botones)
-        self.btn_copy_rows = ctk.CTkButton(buttons_container, text=f"📋 {self.traducir('copiar_seleccion')}", width=120, command=self._copy_selected_rows_browser)
+        # Fila 3: Acciones de copia (3 botones) - Sin emojis porque tienen iconos de imagen
+        self.btn_copy_rows = ctk.CTkButton(buttons_container, text=self.traducir('copiar_seleccion'), width=120, command=self._copy_selected_rows_browser)
         self.btn_copy_rows.grid(row=2, column=0, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
         CTkTooltip(self.btn_copy_rows, self.traducir("copiar_seleccion"))
-        self.btn_copy_marked = ctk.CTkButton(buttons_container, text=f"📦 {self.traducir('copiar_marcados')}", width=120, command=self._copy_checked_items_from_browser)
+        self.btn_copy_marked = ctk.CTkButton(buttons_container, text=self.traducir('copiar_marcados'), width=120, command=self._copy_checked_items_from_browser)
         self.btn_copy_marked.grid(row=2, column=1, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
         CTkTooltip(self.btn_copy_marked, self.traducir("copiar_marcados"))
-        self.btn_limpiar_seleccion = ctk.CTkButton(buttons_container, text=f"🗑️ {self.traducir('limpiar_seleccion')}", width=120, command=self._limpiar_lista_cargada)
+        self.btn_limpiar_seleccion = ctk.CTkButton(buttons_container, text=self.traducir('limpiar_seleccion'), width=120, command=self._limpiar_lista_cargada)
         self.btn_limpiar_seleccion.grid(row=2, column=2, padx=EXPLORER_BTN_PADX, pady=EXPLORER_BTN_PADY)
         CTkTooltip(self.btn_limpiar_seleccion, self.traducir("limpiar_seleccion"))
         
@@ -1216,10 +1072,10 @@ class XboxGameLookupApp(ctk.CTk):
         self.files_filter_entry.pack(side="left", padx=(0,6))
         self.files_filter_entry.bind("<Return>", lambda e: self._apply_files_filter())
         self.files_filter_entry.bind("<KeyRelease>", lambda e: self._apply_files_filter(debounce=True))
-        self.btn_filter = ctk.CTkButton(filter_bar, text=f"🔍 {self.traducir('aplicar_filtro')}", width=90, command=self._apply_files_filter)
+        self.btn_filter = ctk.CTkButton(filter_bar, text=self.traducir('aplicar_filtro'), width=90, command=self._apply_files_filter)
         self.btn_filter.pack(side="left", padx=(0,6))
         CTkTooltip(self.btn_filter, self.traducir("aplicar_filtro"))
-        self.btn_filter_clear = ctk.CTkButton(filter_bar, text=f"🧹 {self.traducir('limpiar_filtro')}", width=90, command=self._clear_files_filter)
+        self.btn_filter_clear = ctk.CTkButton(filter_bar, text=self.traducir('limpiar_filtro'), width=90, command=self._clear_files_filter)
         self.btn_filter_clear.pack(side="left")
         CTkTooltip(self.btn_filter_clear, self.traducir("limpiar_filtro"))
 
@@ -1261,11 +1117,24 @@ class XboxGameLookupApp(ctk.CTk):
 
     def _update_ui_texts(self):
         self.label_entrada.configure(text=self.traducir("ingresa_texto"))
-        self.boton_buscar.configure(text=f"🔍 {self.traducir('buscar')}")
+        self.boton_buscar.configure(text=self.traducir('buscar'))
         self.switch.configure(text=self.traducir("modo_oscuro"))
         if hasattr(self, 'switch_names'):
             self.switch_names.configure(text=self.traducir("mostrar_nombres"))
         self.idioma_menu_label.configure(text=f"🌐 {self.traducir('idioma')}:")
+        if hasattr(self, 'btn_cliente'):
+            # Usar traducciones directamente para evitar problemas
+            idioma_actual = getattr(self, 'idioma_actual', 'es')
+            cliente_text = traducciones.get(idioma_actual, traducciones['es']).get('cambiar_cliente', 'Cambiar Cliente')
+            # Actualizar el texto del botón
+            self.btn_cliente.configure(text=f"👤 {cliente_text}")
+            # Actualizar tooltip del botón cliente
+            if not hasattr(self, '_btn_cliente_tooltip'):
+                # Crear tooltip por primera vez
+                self._btn_cliente_tooltip = CTkTooltip(self.btn_cliente, cliente_text)
+            else:
+                # Actualizar el texto del tooltip existente (el tooltip usa self.text cuando se muestra)
+                self._btn_cliente_tooltip.text = cliente_text
         # etiquetas del método de copia (mostrar texto amistoso en tooltip rápido)
         method = self.copy_method_var.get()
         self.copy_method_menu.configure(values=["auto","explorer","internal"])
@@ -1337,7 +1206,7 @@ class XboxGameLookupApp(ctk.CTk):
             # Ajustar otros botones superiores
             top_buttons = [
                 'btn_limpiar_lista', 'btn_paste_list', 'btn_cargar_lista',
-                'btn_limpiar', 'btn_cargar', 'btn_add_root'
+                'btn_limpiar', 'btn_cargar', 'btn_add_root', 'btn_cliente'
             ]
             for btn_name in top_buttons:
                 if hasattr(self, btn_name):
@@ -1360,6 +1229,7 @@ class XboxGameLookupApp(ctk.CTk):
         self.selector_idioma.set(val); self._guardar_config(); self._update_ui_texts(); self._apply_icons_to_buttons(); 
         if hasattr(self, 'show_names_var'):
             self._toggle_button_names()
+        self._actualizar_titulo_ventana()  # Actualizar título al cambiar idioma
         self._update_db_summary()
 
     def _limpiar_db(self):
@@ -1385,8 +1255,8 @@ class XboxGameLookupApp(ctk.CTk):
         self._update_db_summary()
     
     def _update_db_summary(self):
-        files = len(_loaded_files)
-        rows  = len(_items_by_key)
+        files = get_loaded_files_count()
+        rows  = get_items_count()
         by_sys = summarize_by_system()
         tid_paths = sum(len(v) for v in getattr(self, "_paths_by_tid", {}).values()) if hasattr(self, "_paths_by_tid") else 0
         roots = len(getattr(self, "_scan_roots", []) or [])
@@ -1419,14 +1289,11 @@ class XboxGameLookupApp(ctk.CTk):
         try:
             results = []
             if re.fullmatch(r"[A-Fa-f0-9]{8}", query):
-                tid = query.upper(); results = sorted(_index_tid.get(tid, []), key=lambda it: (it["system"], it["name"].lower()))
+                tid = query.upper()
+                results = sorted(search_by_tid(tid), key=lambda it: (it["system"], it["name"].lower()))
             else:
-                qn = norm_text(query); limit, count = 500, 0
-                for nname, it in _index_name:
-                    if qn in nname:
-                        results.append(it); count += 1
-                        if count >= limit: break
-                results = sorted(results, key=lambda it: (it["name"].lower(), it["system"]))
+                results = search_by_name(query)
+                results = sorted(results, key=lambda it: (it["name"].lower(), it["system"]))[:500]
             if not results:
                 self.status_label.configure(text=self.traducir("no_results_found"), text_color="orange")
                 # Mostrar hint si no hay resultados
@@ -1480,7 +1347,7 @@ class XboxGameLookupApp(ctk.CTk):
                         self._paths_by_tid.setdefault(tid, set()).add(os.path.join(dirpath, d))
 
             # Segunda pasada: indexar por nombre de juego para una mejor búsqueda
-            for it in _items_by_key.values():
+            for it in get_items_by_key().values():
                 tid = it["title_id"]
                 norm_name = norm_text(it["name"])
                 
@@ -1607,9 +1474,10 @@ class XboxGameLookupApp(ctk.CTk):
         if m:
             tid = m.group(1).upper()
             # Buscar en el índice de TIDs
-            if tid in _index_tid:
+            index_tid = get_index_tid()
+            if tid in index_tid:
                 # Tomar el primer resultado (puede haber múltiples por consola)
-                game_item = _index_tid[tid][0]
+                game_item = index_tid[tid][0]
                 return game_item.get("name", "")
         return ""
 
@@ -1904,8 +1772,9 @@ class XboxGameLookupApp(ctk.CTk):
             
             # Obtener nombre del juego
             game_name = ""
-            if tid and tid in _index_tid:
-                game_name = _index_tid[tid][0].get("name", "")
+            index_tid = get_index_tid()
+            if tid and tid in index_tid:
+                game_name = index_tid[tid][0].get("name", "")
             elif not game_name:
                 game_name = self._get_game_name_for_path(path)
             
@@ -2522,7 +2391,7 @@ class XboxGameLookupApp(ctk.CTk):
         def process_in_thread():
             try:
                 # 0) Asegura que la DB esté cargada y las raíces indexadas
-                if not _items_by_key:
+                if not get_items_by_key():
                     load_default_jsons()
                     self.after(0, self._update_db_summary)
 
@@ -2582,11 +2451,12 @@ class XboxGameLookupApp(ctk.CTk):
                     paths_found_for_name: set[str] = set()
 
                     # 3a) Match por nombre en índice de nombres -> TIDs
-                    if _index_name:
+                    index_name = get_index_name()
+                    if index_name:
                         # Búsqueda más flexible: buscar si el nombre normalizado está contenido en el nombre del juego
                         # o si alguna palabra clave del nombre está en el nombre del juego
                         matching_tids = set()
-                        for nname, it in _index_name:
+                        for nname, it in index_name:
                             # Coincidencia exacta o parcial
                             if norm_n in nname or nname in norm_n:
                                 matching_tids.add(it["title_id"])
