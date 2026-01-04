@@ -18,7 +18,7 @@ missing module named 'org.python' - imported by copy (optional), xml.sax (delaye
 missing module named _frozen_importlib_external - imported by importlib._bootstrap (delayed), importlib (optional), importlib.abc (optional)
 excluded module named _frozen_importlib - imported by importlib (optional), importlib.abc (optional)
 missing module named org - imported by pickle (optional)
-missing module named posix - imported by posixpath (optional), shutil (conditional), importlib._bootstrap_external (conditional), os (conditional, optional)
+missing module named posix - imported by os (conditional, optional), posixpath (optional), shutil (conditional), importlib._bootstrap_external (conditional)
 missing module named resource - imported by posix (top-level)
 missing module named typing_extensions - imported by customtkinter.windows.widgets.font.ctk_font (optional), customtkinter.windows.widgets.scaling.scaling_base_class (optional), customtkinter.windows.widgets.core_widget_classes.ctk_base_class (optional), customtkinter.windows.widgets.ctk_progressbar (optional), customtkinter.windows.widgets.ctk_segmented_button (optional), customtkinter.windows.widgets.ctk_scrollable_frame (optional)
 missing module named PyObjCTools - imported by darkdetect._mac_detect (optional)
