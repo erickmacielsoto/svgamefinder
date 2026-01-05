@@ -350,6 +350,12 @@ class XboxGameLookupApp(ctk.CTk):
         # Cargar iconos (si existen)
         self._load_icons()
 
+        # Inicializar variables antes de setup_ui para evitar errores
+        self._checked_paths = set()
+        self._last_checked_paths_for_size = set()
+        self._marked_size_thread = None
+        self._marked_size_stop = threading.Event()
+        
         # UI
         self._setup_ui()
         self._update_ui_texts()
@@ -433,7 +439,7 @@ class XboxGameLookupApp(ctk.CTk):
         self._files_row_by_path = {}
         self._current_entries = []
         self._filter_job = None
-        self._checked_paths = set()
+        # _checked_paths, _last_checked_paths_for_size, _marked_size_thread, _marked_size_stop ya inicializados arriba
         self._user_changed_folder = False  # Rastrea si el usuario cambió manualmente la carpeta
 
     def _load_icons(self):
@@ -532,9 +538,33 @@ class XboxGameLookupApp(ctk.CTk):
 
     # ---------- traducción y preferencias ----------
     def traducir(self, clave): 
+        global traducciones
         # Asegurarse de que el idioma existe, si no usar español por defecto
         idioma = self.idioma_actual if self.idioma_actual in traducciones else 'es'
-        return traducciones[idioma].get(clave, f"MISSING_TRANSLATION_{clave}")
+        resultado = traducciones[idioma].get(clave)
+        if resultado is None:
+            # Intentar con español como fallback
+            resultado = traducciones.get('es', {}).get(clave)
+        if resultado is None:
+            # Si no existe, recargar el módulo una vez y volver a intentar
+            if not hasattr(self, '_translations_reloaded'):
+                try:
+                    import importlib
+                    import translations as translations_module
+                    importlib.reload(translations_module)
+                    from translations import traducciones as traducciones_nuevas
+                    traducciones = traducciones_nuevas
+                    self._translations_reloaded = True
+                    # Intentar de nuevo después de recargar
+                    resultado = traducciones[idioma].get(clave)
+                    if resultado is None:
+                        resultado = traducciones.get('es', {}).get(clave)
+                except Exception:
+                    pass
+            # Si aún no existe, devolver un texto más legible
+            if resultado is None:
+                return clave.replace('_', ' ').title()
+        return resultado
 
     def _guardar_config(self):
         config = {
@@ -923,6 +953,9 @@ class XboxGameLookupApp(ctk.CTk):
         self.btn_add_root = ctk.CTkButton(right, text=f"📂 {traducciones[idioma_ini].get('agregar_carpeta', 'Agregar carpeta')}", command=self._add_scan_root, width=110)
         self.btn_add_root.grid(row=1, column=4, padx=BTN_PADX, pady=BTN_PADY, sticky="w")
         CTkTooltip(self.btn_add_root, traducciones[idioma_ini].get("agregar_carpeta", "Agregar carpeta"))
+        self.btn_ver_carpetas = ctk.CTkButton(right, text=f"📋 {traducciones[idioma_ini].get('ver_carpetas', 'Ver carpetas')}", command=self._show_scan_roots_dialog, width=110)
+        self.btn_ver_carpetas.grid(row=1, column=5, padx=BTN_PADX, pady=BTN_PADY, sticky="w")
+        CTkTooltip(self.btn_ver_carpetas, traducciones[idioma_ini].get("ver_carpetas_tooltip", "Ver carpetas agregadas"))
         
         # Guardar anchos originales de los botones superiores
         self._top_button_widths = {
@@ -933,6 +966,7 @@ class XboxGameLookupApp(ctk.CTk):
             'btn_limpiar': 110,
             'btn_cargar': 110,
             'btn_add_root': 110,
+            'btn_ver_carpetas': 110,
             'btn_cliente': 120,
         }
 
@@ -1007,6 +1041,8 @@ class XboxGameLookupApp(ctk.CTk):
         self.path_label = ctk.CTkLabel(header_info, text=f"{self.traducir('ruta')} -"); self.path_label.pack(side="left")
         # ← Contador de seleccionados | marcados
         self.counts_label = ctk.CTkLabel(header_info, text="  |  0/0"); self.counts_label.pack(side="left", padx=(8, 0))
+        self.marked_size_label = ctk.CTkLabel(header_info, text=f"  |  {self.traducir('tamano_marcados')}: -")
+        self.marked_size_label.pack(side="left", padx=(8, 0))
         # Hint para el explorador
         self.explorer_hint = ctk.CTkLabel(header_info, text="💡 Agrega una carpeta arriba para navegar", 
                                        text_color="gray", font=ctk.CTkFont(size=11))
@@ -1332,12 +1368,95 @@ class XboxGameLookupApp(ctk.CTk):
         if not hasattr(self, "_scan_roots"): self._scan_roots = []
         if path not in self._scan_roots:
             self._scan_roots.append(path); self._guardar_config()
-        self._scan_root(path); self._update_db_summary()
-        self.status_label.configure(text=self.traducir("carpeta_indexada"), text_color="green")
+        
+        # Escanear en segundo plano para no bloquear la UI
+        self.status_label.configure(text=self.traducir("escaneando_carpeta"), text_color="orange")
+        threading.Thread(target=lambda: self._scan_root_async(path), daemon=True).start()
+
+    def _scan_root_async(self, root):
+        """Escanea una carpeta en segundo plano y actualiza la UI cuando termina."""
+        try:
+            self._scan_root(root, recursive=True)
+            self.after(0, lambda: (
+                self._update_db_summary(),
+                self.status_label.configure(text=self.traducir("carpeta_indexada"), text_color="green")
+            ))
+        except Exception as e:
+            self.after(0, lambda: self.status_label.configure(
+                text=f"Error al escanear: {e}", text_color="red"
+            ))
+
+    def _show_scan_roots_dialog(self):
+        """Muestra un diálogo con las carpetas agregadas y permite eliminarlas."""
+        if not hasattr(self, "_scan_roots") or not self._scan_roots:
+            messagebox.showinfo(self.traducir("info"), self.traducir("ninguna_carpeta_agregada"))
+            return
+        
+        dlg = ctk.CTkToplevel(self)
+        dlg.title(self.traducir("carpetas_agregadas"))
+        dlg.geometry("700x400")
+        dlg.grab_set()
+        
+        ctk.CTkLabel(dlg, text=self.traducir("carpetas_agregadas_desc"), 
+                    font=ctk.CTkFont(size=12)).pack(pady=(10, 5))
+        
+        # Frame con scrollbar para la lista
+        frame_list = ctk.CTkFrame(dlg)
+        frame_list.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        listbox = ctk.CTkTextbox(frame_list, width=680, height=250)
+        listbox.pack(fill="both", expand=True, padx=5, pady=5)
+        listbox.configure(state="normal")
+        
+        for i, path in enumerate(self._scan_roots, 1):
+            listbox.insert("end", f"{i}. {path}\n")
+        listbox.configure(state="disabled")
+        
+        btn_frame = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_frame.pack(pady=(5, 10))
+        
+        def eliminar_seleccionada():
+            # Obtener el índice seleccionado (simplificado: eliminar la última)
+            # En una versión mejorada, se podría hacer selección múltiple
+            if self._scan_roots:
+                eliminada = self._scan_roots.pop()
+                self._guardar_config()
+                # Limpiar índices relacionados con esa carpeta
+                if hasattr(self, "_paths_by_tid"):
+                    tids_a_eliminar = []
+                    for tid, paths in list(self._paths_by_tid.items()):
+                        # Crear nuevo set sin la carpeta eliminada
+                        paths_filtrados = {p for p in paths if p != eliminada and not p.startswith(eliminada + os.sep)}
+                        if not paths_filtrados:
+                            tids_a_eliminar.append(tid)
+                        else:
+                            self._paths_by_tid[tid] = paths_filtrados
+                    for tid in tids_a_eliminar:
+                        del self._paths_by_tid[tid]
+                
+                # Limpiar también _paths_by_name
+                if hasattr(self, "_paths_by_name"):
+                    for norm_name, paths in list(self._paths_by_name.items()):
+                        paths_filtrados = {p for p in paths if p != eliminada and not p.startswith(eliminada + os.sep)}
+                        if not paths_filtrados:
+                            del self._paths_by_name[norm_name]
+                        else:
+                            self._paths_by_name[norm_name] = paths_filtrados
+                dlg.destroy()
+                self._update_db_summary()
+                messagebox.showinfo(self.traducir("info"), self.traducir("carpeta_eliminada"))
+        
+        ctk.CTkButton(btn_frame, text=self.traducir("eliminar_ultima"), 
+                     command=eliminar_seleccionada, width=150).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text=self.traducir("cancelar"), 
+                     command=dlg.destroy, width=120).pack(side="left", padx=5)
+        
+        dlg.wait_window()
 
     def _scan_root(self, root, recursive=True):
         """
         Escanea una carpeta raíz e indexa los juegos encontrados.
+        OPTIMIZADO: Hace una sola pasada en lugar de dos.
         Si recursive=False, solo escanea el nivel actual (no recursivo).
         """
         if not hasattr(self, "_paths_by_tid"):
@@ -1346,35 +1465,51 @@ class XboxGameLookupApp(ctk.CTk):
             self._paths_by_name = {}
 
         if recursive:
-            # Escaneo recursivo completo (para carpetas raíz agregadas manualmente)
-            # Primera pasada: indexar por Title ID
+            # OPTIMIZACIÓN: Una sola pasada combinando indexación por TID y nombre
+            items_by_tid = get_items_by_key()
+            tid_to_names = {}  # Cache: TID -> nombres normalizados
+            
+            # Pre-cargar nombres normalizados de todos los juegos
+            for it in items_by_tid.values():
+                tid = it["title_id"]
+                norm_name = norm_text(it["name"])
+                if tid not in tid_to_names:
+                    tid_to_names[tid] = []
+                tid_to_names[tid].append(norm_name)
+            
+            # Una sola pasada: escanear y indexar por TID y nombre simultáneamente
             for dirpath, _, dirnames in os.walk(root):
                 base = os.path.basename(dirpath)
+                base_norm = norm_text(base)
+                
+                # Buscar Title ID en el nombre de la carpeta
                 m = re.search(r'([0-9A-Fa-f]{8})', base)
                 if m:
                     tid = m.group(1).upper()
                     self._paths_by_tid.setdefault(tid, set()).add(dirpath)
+                    # Si conocemos el nombre del juego para este TID, indexarlo también
+                    if tid in tid_to_names:
+                        for norm_name in tid_to_names[tid]:
+                            self._paths_by_name.setdefault(norm_name, set()).add(dirpath)
                 
+                # Buscar en subdirectorios que sean exactamente un TID
                 for d in dirnames:
                     if re.fullmatch(r'[0-9A-Fa-f]{8}', d):
                         tid = d.upper()
-                        self._paths_by_tid.setdefault(tid, set()).add(os.path.join(dirpath, d))
-
-            # Segunda pasada: indexar por nombre de juego para una mejor búsqueda
-            for it in get_items_by_key().values():
-                tid = it["title_id"]
-                norm_name = norm_text(it["name"])
+                        full_path = os.path.join(dirpath, d)
+                        self._paths_by_tid.setdefault(tid, set()).add(full_path)
+                        # Indexar por nombre si conocemos el nombre del juego
+                        if tid in tid_to_names:
+                            for norm_name in tid_to_names[tid]:
+                                self._paths_by_name.setdefault(norm_name, set()).add(full_path)
                 
-                # Buscar en las carpetas indexadas por TID para añadir también el nombre
-                if tid in self._paths_by_tid:
-                    for path in self._paths_by_tid[tid]:
-                        self._paths_by_name.setdefault(norm_name, set()).add(path)
-                
-                # Buscar en el árbol de directorios para una coincidencia con el nombre
-                for dirpath, _, _ in os.walk(root):
-                    norm_dir_name = norm_text(os.path.basename(dirpath))
-                    if norm_name == norm_dir_name or norm_name in norm_dir_name:
-                        self._paths_by_name.setdefault(norm_name, set()).add(dirpath)
+                # Búsqueda adicional por nombre (solo si no encontramos TID)
+                # Esto ayuda cuando el nombre de la carpeta coincide con el nombre del juego
+                if not m:  # Solo si no encontramos TID en el nombre
+                    for tid, names in tid_to_names.items():
+                        for norm_name in names:
+                            if norm_name == base_norm or (len(norm_name) > 3 and norm_name in base_norm):
+                                self._paths_by_name.setdefault(norm_name, set()).add(dirpath)
         else:
             # Escaneo solo del nivel actual (rápido para cuando se pega lista)
             try:
@@ -1562,17 +1697,118 @@ class XboxGameLookupApp(ctk.CTk):
     def _update_counts(self):
         # seleccionados visibles
         sel_count = len(self.tree_files.selection())
-        # marcados visibles
+        # marcados visibles (en la vista actual)
         marked_visible = 0
         for row in self.tree_files.get_children():
             vals = self.tree_files.item(row, "values")
             if not vals: continue
             path = vals[-1]
-            if path in self._checked_paths:
+            path_norm = os.path.normpath(path)
+            if path_norm in self._checked_paths:
                 marked_visible += 1
-        self.counts_label.configure(
-            text=f"  |  {self.traducir('seleccionados')}: {sel_count}  |  {self.traducir('marcados')}: {marked_visible}"
+        
+        # Total de marcados (en todas las carpetas)
+        total_marked = len(self._checked_paths)
+        
+        # Mostrar ambos: visibles y total
+        if total_marked > marked_visible:
+            self.counts_label.configure(
+                text=f"  |  {self.traducir('seleccionados')}: {sel_count}  |  {self.traducir('marcados')}: {marked_visible}/{total_marked}"
+            )
+        else:
+            self.counts_label.configure(
+                text=f"  |  {self.traducir('seleccionados')}: {sel_count}  |  {self.traducir('marcados')}: {marked_visible}"
+            )
+        self._update_marked_size_async()
+
+    def _set_marked_size_label(self, total_bytes=None, calculating=False):
+        """Actualiza el label de tamaño total marcado (con soporte para 'calculando')."""
+        if not hasattr(self, "marked_size_label"):
+            return
+        if calculating:
+            size_txt = self.traducir("calculando")
+        elif total_bytes is None:
+            size_txt = "-"
+        else:
+            size_txt = fmt_size(total_bytes)
+        self.marked_size_label.configure(
+            text=f"  |  {self.traducir('tamano_marcados')}: {size_txt}"
         )
+
+    def _update_marked_size_async(self):
+        """Calcula en segundo plano el tamaño total de todo lo marcado."""
+        if not hasattr(self, "marked_size_label"):
+            return
+        if not hasattr(self, "_checked_paths"):
+            return
+
+        paths = {p for p in self._checked_paths if os.path.exists(p)}
+
+        # Si no hay paths marcados, resetear y salir
+        if not paths:
+            self._last_checked_paths_for_size = set()
+            self._set_marked_size_label(total_bytes=0)
+            try:
+                if self._marked_size_stop:
+                    self._marked_size_stop.set()
+            except Exception:
+                pass
+            return
+
+        # Evitar cálculos repetidos si no cambió el conjunto
+        if paths == getattr(self, "_last_checked_paths_for_size", set()):
+            return
+        self._last_checked_paths_for_size = set(paths)
+
+        # Cancelar cálculo previo si sigue corriendo
+        try:
+            if self._marked_size_stop:
+                self._marked_size_stop.set()
+        except Exception:
+            pass
+
+        stop_event = threading.Event()
+        self._marked_size_stop = stop_event
+        self._set_marked_size_label(calculating=True)
+
+        def dir_size(p: str) -> int | None:
+            total = 0
+            for root, _dirs, files in os.walk(p):
+                if stop_event.is_set():
+                    return None
+                for fname in files:
+                    fp = os.path.join(root, fname)
+                    try:
+                        total += os.path.getsize(fp)
+                    except Exception:
+                        pass
+            return total
+
+        def worker():
+            total = 0
+            folder_cache = getattr(self, "_folder_size_cache", {})
+            for p in paths:
+                if stop_event.is_set():
+                    return
+                if os.path.isdir(p):
+                    size = folder_cache.get(p)
+                    if size is None:
+                        size = dir_size(p)
+                        if size is None:  # Cancelado
+                            return
+                        folder_cache[p] = size
+                    total += size or 0
+                else:
+                    try:
+                        total += os.path.getsize(p)
+                    except Exception:
+                        pass
+            if stop_event.is_set():
+                return
+            self.after(0, lambda: self._set_marked_size_label(total_bytes=total))
+
+        self._marked_size_thread = threading.Thread(target=worker, daemon=True)
+        self._marked_size_thread.start()
 
     def _on_tree_files_click(self, event):
         # Toggle de check si se clickea la primera columna
@@ -2297,11 +2533,11 @@ class XboxGameLookupApp(ctk.CTk):
         Abre una ventana emergente para que el usuario pegue una lista de juegos.
         """
         dlg = ctk.CTkToplevel(self)
-        dlg.title("Pegar lista de juegos")
+        dlg.title(self.traducir("pegar_lista_dialog_titulo"))
         dlg.geometry("600x400")
         dlg.grab_set()
 
-        ctk.CTkLabel(dlg, text="Pega tu lista de juegos separada por comas:").pack(pady=10)
+        ctk.CTkLabel(dlg, text=self.traducir("pegar_lista_dialog_desc")).pack(pady=10)
         
         textbox = ctk.CTkTextbox(dlg, width=580, height=280)
         textbox.pack(padx=10, pady=(0, 10))
@@ -2317,8 +2553,8 @@ class XboxGameLookupApp(ctk.CTk):
 
         btn_frame = ctk.CTkFrame(dlg, fg_color="transparent")
         btn_frame.pack(pady=(0, 10))
-        ctk.CTkButton(btn_frame, text="Aceptar", command=on_paste_and_go).pack(side="left", padx=5)
-        ctk.CTkButton(btn_frame, text="Cancelar", command=on_cancel).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text=self.traducir("aceptar"), command=on_paste_and_go).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text=self.traducir("cancelar"), command=on_cancel).pack(side="left", padx=5)
 
         dlg.wait_window()
 
@@ -2327,11 +2563,11 @@ class XboxGameLookupApp(ctk.CTk):
         Muestra una ventana con la lista de juegos que no se encontraron, con conteo.
         """
         dlg = ctk.CTkToplevel(self)
-        dlg.title(f"Juegos faltantes ({len(missing_games)})")
+        dlg.title(f"{self.traducir('juegos_faltantes_titulo')} ({len(missing_games)})")
         dlg.geometry("500x400")
         dlg.grab_set()
 
-        ctk.CTkLabel(dlg, text=f"Se encontraron {len(missing_games)} juegos faltantes:").pack(pady=10)
+        ctk.CTkLabel(dlg, text=f"{self.traducir('juegos_faltantes_desc')} {len(missing_games)}:").pack(pady=10)
         
         textbox = ctk.CTkTextbox(dlg, width=480, height=280)
         textbox.pack(padx=10, pady=(0, 10))
@@ -2343,7 +2579,7 @@ class XboxGameLookupApp(ctk.CTk):
         def on_close():
             dlg.destroy()
 
-        ctk.CTkButton(dlg, text="Cerrar", command=on_close).pack(pady=(0, 10))
+        ctk.CTkButton(dlg, text=self.traducir("cerrar"), command=on_close).pack(pady=(0, 10))
         dlg.wait_window()
 
     def _render_files(self, entries):
@@ -2398,13 +2634,61 @@ class XboxGameLookupApp(ctk.CTk):
         Usa la carpeta actual del explorador como base de búsqueda.
         Ejecuta el procesamiento en un hilo separado para no bloquear la UI.
         """
-        # 1) UI: estado "procesando"
-        self.status_label.configure(text="Procesando lista...", text_color="orange")
-        self.update_idletasks()
+        # Crear diálogo de progreso
+        dlg = ctk.CTkToplevel(self)
+        dlg.title(self.traducir("procesando_lista"))
+        dlg.geometry("600x180")
+        dlg.grab_set()
+        dlg.transient(self)
+        
+        title_lbl = ctk.CTkLabel(dlg, text=self.traducir("procesando_lista"), font=ctk.CTkFont(size=14, weight="bold"))
+        title_lbl.pack(pady=(12, 6))
+        
+        status_lbl = ctk.CTkLabel(dlg, text="", wraplength=560, justify="left")
+        status_lbl.pack(padx=16, pady=(0, 6))
+        
+        pbar = ctk.CTkProgressBar(dlg)
+        pbar.pack(fill="x", padx=16, pady=8)
+        pbar.set(0)
+        
+        detail_lbl = ctk.CTkLabel(dlg, text="0%")
+        detail_lbl.pack(pady=(0, 6))
+        
+        # Estado compartido para el progreso
+        progress_state = {
+            "current": 0,
+            "total": 0,
+            "current_game": "",
+            "done": False,
+            "error": None
+        }
+        
+        def update_progress():
+            if progress_state["done"]:
+                dlg.destroy()
+                return
+            if progress_state["error"]:
+                dlg.destroy()
+                messagebox.showerror(self.traducir("error"), f"{self.traducir('error_busqueda')}\n{progress_state['error']}")
+                return
+            
+            if progress_state["total"] > 0:
+                frac = min(1.0, progress_state["current"] / progress_state["total"])
+                pbar.set(frac)
+                percent = int(frac * 100)
+                current_text = progress_state.get("current_game", "")
+                status_lbl.configure(text=f"{self.traducir('procesando')} {current_text}")
+                detail_lbl.configure(text=f"{percent}% ({progress_state['current']}/{progress_state['total']})")
+            dlg.after(100, update_progress)
+        
+        update_progress()
         
         def process_in_thread():
             try:
                 # 0) Asegura que la DB esté cargada y las raíces indexadas
+                progress_state["current_game"] = self.traducir("cargando")
+                self.after(0, update_progress)
+                
                 if not get_items_by_key():
                     load_default_jsons()
                     self.after(0, self._update_db_summary)
@@ -2431,7 +2715,7 @@ class XboxGameLookupApp(ctk.CTk):
                     if not is_scanned:
                         # Escanear solo el nivel actual, no recursivamente (mucho más rápido)
                         self.after(0, lambda: self.status_label.configure(
-                            text="Indexando carpeta actual...", text_color="orange"
+                            text=self.traducir("indexando_carpeta_actual"), text_color="orange"
                         ))
                         self._scan_root(current_folder, recursive=False)
                         self.after(0, self._update_db_summary)
@@ -2452,86 +2736,123 @@ class XboxGameLookupApp(ctk.CTk):
                 game_names = [n.strip() for n in raw.split(",") if n.strip()]
                 total_games = len(game_names)
 
-                # 3) Resolver rutas para cada nombre
+                # OPTIMIZACIÓN: Pre-construir índices invertidos para búsquedas rápidas
+                # Índice invertido: palabra -> lista de (nombre_normalizado, tid)
+                word_to_tids: dict[str, set[tuple[str, str]]] = {}
+                index_name = get_index_name()
+                if index_name:
+                    for nname, it in index_name:
+                        tid = it["title_id"]
+                        words = nname.split()
+                        for word in words:
+                            if len(word) > 2:  # Solo palabras significativas
+                                if word not in word_to_tids:
+                                    word_to_tids[word] = set()
+                                word_to_tids[word].add((nname, tid))
+                
+                # Cachear lista de directorios de la carpeta actual (solo una vez)
+                current_folder_items = {}
+                if current_folder and os.path.isdir(current_folder):
+                    try:
+                        for item in os.listdir(current_folder):
+                            item_path = os.path.join(current_folder, item)
+                            if os.path.isdir(item_path):
+                                current_folder_items[norm_text(item)] = item_path
+                    except Exception:
+                        pass
+
+                # Actualizar estado inicial
+                progress_state["total"] = total_games
+                progress_state["current"] = 0
+                
+                # 3) Resolver rutas para cada nombre (OPTIMIZADO)
                 for i, name in enumerate(game_names):
-                    # Actualizar progreso cada 10 juegos
-                    if i % 10 == 0:
-                        self.after(0, lambda n=i, t=total_games: self.status_label.configure(
-                            text=f"Procesando lista... {n}/{t}", text_color="orange"
-                        ))
+                    # Actualizar progreso
+                    progress_state["current"] = i + 1
+                    progress_state["current_game"] = name[:50] + ("..." if len(name) > 50 else "")
+                    self.after(0, update_progress)
                     
                     norm_n = norm_text(name)
-                    name_words = norm_n.split()  # Definir una vez al inicio
+                    name_words = [w for w in norm_n.split() if len(w) > 2]  # Solo palabras significativas
                     paths_found_for_name: set[str] = set()
 
-                    # 3a) Match por nombre en índice de nombres -> TIDs
-                    index_name = get_index_name()
-                    if index_name:
-                        # Búsqueda más flexible: buscar si el nombre normalizado está contenido en el nombre del juego
-                        # o si alguna palabra clave del nombre está en el nombre del juego
+                    # 3a) Match por nombre en índice de nombres -> TIDs (OPTIMIZADO con índice invertido)
+                    if index_name and word_to_tids:
                         matching_tids = set()
-                        for nname, it in index_name:
-                            # Coincidencia exacta o parcial
-                            if norm_n in nname or nname in norm_n:
-                                matching_tids.add(it["title_id"])
-                            # Si el nombre tiene múltiples palabras, buscar si todas están presentes
-                            elif len(name_words) > 1:
-                                if all(word in nname for word in name_words if len(word) > 2):
-                                    matching_tids.add(it["title_id"])
+                        # Si hay una sola palabra, buscar directamente
+                        if len(name_words) == 1:
+                            word = name_words[0]
+                            if word in word_to_tids:
+                                for nname, tid in word_to_tids[word]:
+                                    if norm_n in nname or nname in norm_n:
+                                        matching_tids.add(tid)
+                        elif name_words:
+                            # Múltiples palabras: buscar intersección de TIDs que contengan todas las palabras
+                            candidate_tids = None
+                            for word in name_words:
+                                if word in word_to_tids:
+                                    word_tids = {tid for _, tid in word_to_tids[word]}
+                                    if candidate_tids is None:
+                                        candidate_tids = word_tids
+                                    else:
+                                        candidate_tids &= word_tids  # Intersección
+                            
+                            if candidate_tids:
+                                # Verificar que todas las palabras estén en el nombre del juego
+                                for nname, it in index_name:
+                                    tid = it["title_id"]
+                                    if tid in candidate_tids:
+                                        if all(word in nname for word in name_words):
+                                            matching_tids.add(tid)
                         
                         for tid in matching_tids:
                             paths_found_for_name.update(self._find_paths_for_tid(tid))
 
-                    # 3b) Match directo en índice por nombre de carpeta (construido al escanear raíces)
+                    # 3b) Match directo en índice por nombre de carpeta (OPTIMIZADO)
                     if self._paths_by_name:
-                        # exacto
+                        # Búsqueda exacta primero (más rápida)
                         if norm_n in self._paths_by_name:
                             paths_found_for_name.update(self._paths_by_name[norm_n])
-                        else:
-                            # contiene (suave) — útil para listas con pequeñas variaciones
+                        elif name_words:
+                            # Búsqueda por palabras clave (solo si hay palabras)
                             for key_name, paths in self._paths_by_name.items():
-                                # Coincidencia exacta o parcial
-                                if norm_n in key_name or key_name in norm_n:
+                                # Verificar si todas las palabras están en el nombre de la carpeta
+                                if all(word in key_name for word in name_words):
                                     paths_found_for_name.update(paths)
-                                # Si el nombre tiene múltiples palabras, buscar si todas están presentes
-                                elif len(name_words) > 1:
-                                    if all(word in key_name for word in name_words if len(word) > 2):
-                                        paths_found_for_name.update(paths)
                     
-                    # 3c) Búsqueda directa en la carpeta actual del explorador
-                    if current_folder and os.path.isdir(current_folder):
-                        # Buscar subdirectorios que coincidan con el nombre del juego
-                        try:
-                            for item in os.listdir(current_folder):
-                                item_path = os.path.join(current_folder, item)
-                                if os.path.isdir(item_path):
-                                    item_norm = norm_text(item)
-                                    # Coincidencia exacta o parcial
-                                    if norm_n == item_norm or norm_n in item_norm or item_norm in norm_n:
-                                        paths_found_for_name.add(item_path)
-                                    # Búsqueda por palabras clave
-                                    elif len(name_words) > 1:
-                                        item_words = item_norm.split()
-                                        if all(word in item_norm for word in name_words if len(word) > 2):
-                                            paths_found_for_name.add(item_path)
-                        except Exception:
-                            pass
+                    # 3c) Búsqueda directa en la carpeta actual (OPTIMIZADO: usa cache)
+                    if current_folder_items:
+                        # Búsqueda exacta primero
+                        if norm_n in current_folder_items:
+                            paths_found_for_name.add(current_folder_items[norm_n])
+                        elif name_words:
+                            # Búsqueda por palabras clave
+                            for item_norm, item_path in current_folder_items.items():
+                                if all(word in item_norm for word in name_words):
+                                    paths_found_for_name.add(item_path)
 
                     if paths_found_for_name:
-                        # Solo tomar el primer path encontrado para cada juego (evitar duplicados)
-                        first_path = sorted(list(paths_found_for_name))[0]
-                        # Normalizar el path para asegurar coincidencias exactas
-                        first_path = os.path.normpath(first_path)
-                        found_paths.add(first_path)
+                        # Agregar TODOS los paths encontrados (no solo el primero)
+                        # Esto permite marcar múltiples ubicaciones del mismo juego
+                        for path in paths_found_for_name:
+                            path_norm = os.path.normpath(path)
+                            found_paths.add(path_norm)
                         found_games.add(name)  # Rastrear que este juego fue encontrado
                     else:
                         missing_games.append(name)
 
                 # 4) Actualizar UI en el hilo principal
-                self.after(0, lambda: self._apply_game_list_results(found_paths, missing_games, total_games, len(found_games)))
+                progress_state["done"] = True
+                self.after(0, lambda: (
+                    dlg.destroy(),
+                    self._apply_game_list_results(found_paths, missing_games, total_games, len(found_games))
+                ))
                 
             except Exception as e:
+                progress_state["done"] = True
+                progress_state["error"] = str(e)
                 self.after(0, lambda: (
+                    dlg.destroy(),
                     messagebox.showerror(self.traducir("error"), f"Error al procesar la lista:\n{e}"),
                     self.status_label.configure(text=self.traducir("error"), text_color="red")
                 ))
@@ -2542,11 +2863,25 @@ class XboxGameLookupApp(ctk.CTk):
     def _apply_game_list_results(self, found_paths: set[str], missing_games: list[str], total_games: int, found_games_count: int):
         """Aplica los resultados del procesamiento de la lista en el hilo principal"""
         try:
-            # 4) Actualiza los checks - normalizar todos los paths
+            # 4) Actualiza los checks - normalizar todos los paths y filtrar los que existen
             self._checked_paths.clear()
-            # Normalizar todos los paths para asegurar coincidencias exactas
+            
+            # Diagnosticar diferencias
+            paths_before_normalize = len(found_paths)
             normalized_paths = {os.path.normpath(p) for p in found_paths}
-            self._checked_paths.update(normalized_paths)
+            paths_after_normalize = len(normalized_paths)
+            existing_paths = {p for p in normalized_paths if os.path.exists(p)}
+            actually_marked = len(existing_paths)
+            
+            # Si hay diferencias, mostrar información de diagnóstico
+            paths_inexistentes = normalized_paths - existing_paths
+            if paths_inexistentes and len(paths_inexistentes) <= 10:
+                # Solo mostrar si hay pocos, para no saturar
+                print(f"Paths que no existen ({len(paths_inexistentes)}):")
+                for p in list(paths_inexistentes)[:10]:
+                    print(f"  - {p}")
+            
+            self._checked_paths.update(existing_paths)
 
             # 🔄 refresca lo que esté en pantalla para mostrar los checks marcados
             current_folder = getattr(self, "current_folder", None)
@@ -2557,56 +2892,80 @@ class XboxGameLookupApp(ctk.CTk):
 
             # 5) Navegar a la carpeta que contiene los archivos encontrados
             # Priorizar la carpeta actual si hay archivos encontrados ahí
-            if found_paths:
-                # Verificar si alguno de los paths encontrados está en la carpeta actual
-                paths_in_current = False
+            if existing_paths:
+                # Contar cuántos paths marcados están en la carpeta actual
+                paths_in_current_count = 0
                 if current_folder:
                     current_norm = os.path.normpath(current_folder)
-                    for path in found_paths:
+                    for path in existing_paths:
                         path_norm = os.path.normpath(path)
                         # Si el path está en la carpeta actual o es la carpeta actual
                         if path_norm == current_norm or path_norm.startswith(current_norm + os.sep):
-                            paths_in_current = True
-                            break
+                            paths_in_current_count += 1
                 
-                # Si hay paths en la carpeta actual, solo refrescar la vista
-                if paths_in_current and current_folder:
+                # Si hay muchos paths en la carpeta actual (más del 50%), solo refrescar la vista
+                if paths_in_current_count > len(existing_paths) * 0.5 and current_folder:
                     # Refrescar la lista para que se muestren los checks marcados
                     self._list_folder(current_folder)
-                # Si no hay paths en la carpeta actual Y el usuario NO cambió manualmente, navegar
+                # Si no hay suficientes paths en la carpeta actual Y el usuario NO cambió manualmente, navegar
                 elif not self._user_changed_folder:
                     try:
                         from collections import Counter
-                        parents = [os.path.dirname(p.rstrip("\\/")) for p in found_paths]
-                        # idealmente abre donde los hijos directos ya son los marcados
-                        best_parent, _ = Counter(parents).most_common(1)[0]
-                        if best_parent and os.path.isdir(best_parent):
-                            self._user_changed_folder = False  # Reset antes de cambiar programáticamente
-                            self._enter_folder(best_parent)
-                            self._user_changed_folder = False  # Mantener en False después
-                    except Exception:
-                        # fallback razonable
-                        try:
-                            common = os.path.commonpath(list(found_paths))
-                            if not os.path.isdir(common):
-                                common = os.path.dirname(common)
-                            if common:
+                        # Obtener el directorio padre de cada path marcado
+                        parents = [os.path.dirname(p.rstrip("\\/")) for p in existing_paths if os.path.exists(p)]
+                        if parents:
+                            # Encontrar el directorio padre más común (donde están más carpetas marcadas)
+                            parent_counts = Counter(parents)
+                            best_parent, count = parent_counts.most_common(1)[0]
+                            
+                            # Si hay muchos archivos en ese directorio, navegar ahí
+                            if count >= len(existing_paths) * 0.3 and best_parent and os.path.isdir(best_parent):
                                 self._user_changed_folder = False
-                                self._enter_folder(common)
+                                self._enter_folder(best_parent)
                                 self._user_changed_folder = False
-                        except Exception:
-                            if getattr(self, "_scan_roots", []):
-                                self._user_changed_folder = False
-                                self._enter_folder(self._scan_roots[0])
-                                self._user_changed_folder = False
+                            else:
+                                # Si no hay un directorio dominante, usar el path común
+                                try:
+                                    common = os.path.commonpath(list(existing_paths))
+                                    if not os.path.isdir(common):
+                                        common = os.path.dirname(common)
+                                    if common and os.path.isdir(common):
+                                        self._user_changed_folder = False
+                                        self._enter_folder(common)
+                                        self._user_changed_folder = False
+                                except Exception:
+                                    # Fallback: usar el primer scan_root
+                                    if getattr(self, "_scan_roots", []):
+                                        self._user_changed_folder = False
+                                        self._enter_folder(self._scan_roots[0])
+                                        self._user_changed_folder = False
+                    except Exception as e:
+                        print(f"Error navegando a carpeta: {e}")
+                        # Fallback: refrescar la vista actual
+                        if current_folder:
+                            self._list_folder(current_folder)
                 # Si el usuario cambió manualmente y no hay paths en la carpeta actual, solo refrescar
                 elif current_folder:
                     self._list_folder(current_folder)
 
             # 6) Estado + faltantes
+            # Información detallada sobre las diferencias
+            info_adicional = ""
+            if paths_before_normalize != paths_after_normalize:
+                info_adicional += f" (duplicados eliminados: {paths_before_normalize - paths_after_normalize})"
+            if paths_after_normalize != actually_marked:
+                info_adicional += f" (no existen: {paths_after_normalize - actually_marked})"
+            
+            mensaje = self.traducir("procesados_juegos").format(
+                total=total_games,
+                encontrados=found_games_count,
+                carpetas=len(found_paths),
+                marcados=actually_marked
+            ) + info_adicional
+            
             self.status_label.configure(
-                text=f"Procesados {total_games} juegos. Se encontraron {found_games_count} juegos ({len(found_paths)} carpetas).",
-                text_color="green" if found_paths else "orange"
+                text=mensaje,
+                text_color="green" if actually_marked > 0 else "orange"
             )
             self._update_counts()
             if missing_games:
