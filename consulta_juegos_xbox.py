@@ -2916,10 +2916,29 @@ class XboxGameLookupApp(ctk.CTk):
                         if parents:
                             # Encontrar el directorio padre más común (donde están más carpetas marcadas)
                             parent_counts = Counter(parents)
-                            best_parent, count = parent_counts.most_common(1)[0]
                             
-                            # Si hay muchos archivos en ese directorio, navegar ahí
-                            if count >= len(existing_paths) * 0.3 and best_parent and os.path.isdir(best_parent):
+                            # Buscar la mejor carpeta: la que contiene más elementos marcados
+                            # Primero intentar con un umbral del 30%, pero si no hay, usar la que tenga más elementos
+                            best_parent = None
+                            best_count = 0
+                            
+                            # Buscar carpeta que tenga al menos el 30% de los elementos
+                            for parent, count in parent_counts.most_common():
+                                if count >= len(existing_paths) * 0.3 and os.path.isdir(parent):
+                                    best_parent = parent
+                                    best_count = count
+                                    break
+                            
+                            # Si no hay una carpeta con el 30%, usar la que tenga más elementos
+                            if not best_parent:
+                                for parent, count in parent_counts.most_common():
+                                    if os.path.isdir(parent):
+                                        best_parent = parent
+                                        best_count = count
+                                        break
+                            
+                            # Si encontramos una buena carpeta, navegar ahí
+                            if best_parent and best_count > 0:
                                 self._user_changed_folder = False
                                 self._enter_folder(best_parent)
                                 self._user_changed_folder = False
@@ -2933,6 +2952,17 @@ class XboxGameLookupApp(ctk.CTk):
                                         self._user_changed_folder = False
                                         self._enter_folder(common)
                                         self._user_changed_folder = False
+                                    else:
+                                        # Fallback: usar el primer scan_root que contenga algún path marcado
+                                        scan_roots = getattr(self, "_scan_roots", [])
+                                        for root in scan_roots:
+                                            root_norm = os.path.normpath(root)
+                                            # Verificar si algún path marcado está dentro de esta raíz
+                                            if any(os.path.normpath(p).startswith(root_norm + os.sep) or os.path.normpath(p) == root_norm for p in existing_paths):
+                                                self._user_changed_folder = False
+                                                self._enter_folder(root)
+                                                self._user_changed_folder = False
+                                                break
                                 except Exception:
                                     # Fallback: usar el primer scan_root
                                     if getattr(self, "_scan_roots", []):
