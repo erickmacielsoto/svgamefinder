@@ -1499,6 +1499,14 @@ class XboxGameLookupApp(ctk.CTk):
             # Actualizar contadores
             self._update_counts()
         
+        # Llamar a la función auxiliar para indexar directamente
+        self._index_folder_directly(path)
+    
+    def _index_folder_directly(self, path):
+        """
+        Indexa una carpeta directamente sin abrir diálogo de selección.
+        Limpia todo antes de indexar para empezar limpio.
+        """
         # Reemplazar con la nueva carpeta (solo una)
         self._scan_roots = [path]
         self._guardar_config()
@@ -2111,74 +2119,96 @@ class XboxGameLookupApp(ctk.CTk):
 
     def _change_browser_folder(self):
         folder = filedialog.askdirectory(title=self.traducir("cambiar_carpeta"))
-        if folder:
-            # Crear diálogo de progreso
-            dlg = ctk.CTkToplevel(self)
-            dlg.title(self.traducir("cambiar_carpeta"))
-            dlg.geometry("500x200")
-            dlg.transient(self)
-            dlg.grab_set()
-            
-            frame = ctk.CTkFrame(dlg)
-            frame.pack(fill="both", expand=True, padx=20, pady=20)
-            
-            # Label de estado
-            status_label_dlg = ctk.CTkLabel(
-                frame,
-                text="Cargando carpeta...",
-                font=ctk.CTkFont(size=12)
+        if not folder:
+            return
+        
+        # Verificar si hay una carpeta indexada y si es diferente a la seleccionada
+        has_indexed = hasattr(self, "_scan_roots") and self._scan_roots
+        indexed_path = self._scan_roots[0] if has_indexed else None
+        folder_norm = os.path.normpath(folder)
+        indexed_norm = os.path.normpath(indexed_path) if indexed_path else None
+        
+        # Si hay una carpeta indexada diferente, preguntar si quiere indexar la nueva carpeta
+        if has_indexed and indexed_norm != folder_norm:
+            respuesta = messagebox.askyesno(
+                self.traducir("info"),
+                f"La carpeta indexada actual es:\n{indexed_path}\n\n"
+                f"¿Deseas indexar la nueva carpeta seleccionada?\n{folder}\n\n"
+                f"(Esto reemplazará la carpeta indexada actual)"
             )
-            status_label_dlg.pack(pady=(0, 10))
-            
-            # Barra de progreso (indeterminada)
-            progress_bar = ctk.CTkProgressBar(frame, width=460, mode="indeterminate")
-            progress_bar.pack(pady=(0, 10))
-            progress_bar.start()
-            
-            # Label de detalle
-            detail_label = ctk.CTkLabel(
-                frame,
-                text="Escaneando archivos...",
-                font=ctk.CTkFont(size=11),
-                text_color="gray"
-            )
-            detail_label.pack()
-            
-            def load_folder():
-                try:
-                    # Actualizar mensaje
-                    self.after(0, lambda: (
-                        status_label_dlg.configure(text="Cargando carpeta..."),
-                        detail_label.configure(text="Escaneando archivos y carpetas...")
-                    ))
-                    # Cargar la carpeta (esto puede tardar si hay muchos archivos)
-                    self._enter_folder(folder, user_initiated=True)
-                    # Cerrar diálogo cuando termine
-                    self.after(0, dlg.destroy)
-                except Exception as e:
-                    self.after(0, lambda: (
-                        dlg.destroy(),
-                        messagebox.showerror(self.traducir("error"), f"Error al cargar carpeta:\n{e}")
-                    ))
-            
-            # Función para verificar si terminó (por si el diálogo no se cierra automáticamente)
-            def check_done():
-                try:
-                    if not dlg.winfo_exists():
-                        return
-                    # Verificar si la carpeta ya se cargó (current_folder coincide)
-                    if hasattr(self, 'current_folder') and os.path.normpath(self.current_folder) == os.path.normpath(folder):
-                        progress_bar.stop()
-                        dlg.destroy()
-                    else:
-                        dlg.after(100, check_done)
-                except:
-                    pass
-            
-            check_done()
-            
-            # Ejecutar en hilo separado
-            threading.Thread(target=load_folder, daemon=True).start()
+            if respuesta:
+                # Indexar la nueva carpeta directamente (esto limpiará todo y la indexará)
+                self._index_folder_directly(folder)
+                return  # _index_folder_directly ya navegará a la carpeta
+        
+        # Si no quiere indexar o no hay carpeta indexada, solo cambiar la vista del explorador
+        # Crear diálogo de progreso
+        dlg = ctk.CTkToplevel(self)
+        dlg.title(self.traducir("cambiar_carpeta"))
+        dlg.geometry("500x200")
+        dlg.transient(self)
+        dlg.grab_set()
+        
+        frame = ctk.CTkFrame(dlg)
+        frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        # Label de estado
+        status_label_dlg = ctk.CTkLabel(
+            frame,
+            text="Cargando carpeta...",
+            font=ctk.CTkFont(size=12)
+        )
+        status_label_dlg.pack(pady=(0, 10))
+        
+        # Barra de progreso (indeterminada)
+        progress_bar = ctk.CTkProgressBar(frame, width=460, mode="indeterminate")
+        progress_bar.pack(pady=(0, 10))
+        progress_bar.start()
+        
+        # Label de detalle
+        detail_label = ctk.CTkLabel(
+            frame,
+            text="Escaneando archivos...",
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
+        )
+        detail_label.pack()
+        
+        def load_folder():
+            try:
+                # Actualizar mensaje
+                self.after(0, lambda: (
+                    status_label_dlg.configure(text="Cargando carpeta..."),
+                    detail_label.configure(text="Escaneando archivos y carpetas...")
+                ))
+                # Cargar la carpeta (esto puede tardar si hay muchos archivos)
+                self._enter_folder(folder, user_initiated=True)
+                # Cerrar diálogo cuando termine
+                self.after(0, dlg.destroy)
+            except Exception as e:
+                self.after(0, lambda: (
+                    dlg.destroy(),
+                    messagebox.showerror(self.traducir("error"), f"Error al cargar carpeta:\n{e}")
+                ))
+        
+        # Función para verificar si terminó (por si el diálogo no se cierra automáticamente)
+        def check_done():
+            try:
+                if not dlg.winfo_exists():
+                    return
+                # Verificar si la carpeta ya se cargó (current_folder coincide)
+                if hasattr(self, 'current_folder') and os.path.normpath(self.current_folder) == folder_norm:
+                    progress_bar.stop()
+                    dlg.destroy()
+                else:
+                    dlg.after(100, check_done)
+            except:
+                pass
+        
+        check_done()
+        
+        # Ejecutar en hilo separado
+        threading.Thread(target=load_folder, daemon=True).start()
 
     # ---------- Worker: tamaños de carpeta ----------
     def _start_dirsize_worker(self, entries, folder, stop_event: threading.Event):
