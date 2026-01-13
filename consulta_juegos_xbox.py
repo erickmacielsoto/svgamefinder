@@ -146,6 +146,28 @@ traducciones = {
         "coincidencias_desc": "Juegos encontrados en ambas listas ({total}):",
         "faltantes_desc": "Juegos en tu lista original pero no marcados ({total}):",
         "sobrantes_desc": "Juegos marcados pero no en tu lista original ({total}):",
+        # Comparar ubicación destino
+        "comparar_ubicacion": "Comparar ubicación destino",
+        "comparar_ubicacion_tooltip": "Compara los juegos en una ubicación destino con la lista cargada",
+        "seleccionar_ubicacion_destino": "Selecciona la carpeta de destino a comparar",
+        "comparando_ubicacion": "Comparando ubicación...",
+        "comparacion_completada": "Comparación completada",
+        "juegos_encontrados_destino": "Juegos encontrados en destino: {count}",
+        "juegos_faltantes": "Juegos faltantes: {count}",
+        "juegos_diferencia_tamano": "Juegos con diferencia de tamaño: {count}",
+        "marcando_faltantes": "Marcando faltantes y con diferencias de tamaño...",
+        # Log de transferencias
+        "log_transferencias": "Log de transferencias",
+        "log_transferencias_tooltip": "Ver y gestionar el log de archivos copiados",
+        "restaurar_desde_log": "Restaurar desde log",
+        "restaurar_desde_log_tooltip": "Elimina los archivos que se copiaron según el log",
+        "continuar_desde_log": "Continuar desde log",
+        "continuar_desde_log_tooltip": "Marca solo los archivos que faltan según el log",
+        "log_vacio": "No hay log de transferencias disponible",
+        "log_restaurado": "Log restaurado: {deleted} elementos eliminados",
+        "log_continuado": "Continuando desde log: {count} elementos marcados",
+        "guardando_log": "Guardando log de transferencia...",
+        "log_guardado": "Log guardado en: {path}",
         "sin_coincidencias": "No hay coincidencias",
         "sin_faltantes": "No hay faltantes",
         "sin_sobrantes": "No hay sobrantes",
@@ -573,6 +595,7 @@ class XboxGameLookupApp(ctk.CTk):
         self._last_checked_paths_for_size = set()
         self._marked_size_thread = None
         self._marked_size_stop = threading.Event()
+        self.original_game_names = []  # Lista original de nombres de juegos cargados
         
         # Cargar iconos (si existen)
         self._load_icons()
@@ -1132,7 +1155,7 @@ class XboxGameLookupApp(ctk.CTk):
         buttons_container = ctk.CTkFrame(buttons_frame, fg_color="transparent")
         buttons_container.pack(side="right")
         
-        # Fila 1: Navegación básica (4 botones)
+        # Fila 1: Navegación básica (6 botones)
         self.btn_back = ctk.CTkButton(buttons_container, text=f"⬅️ {self.traducir('atras')}", width=90, command=self._nav_back)
         self.btn_back.grid(row=0, column=0, padx=(6,4), pady=2)
         self.btn_forward = ctk.CTkButton(buttons_container, text=f"➡️ {self.traducir('adelante')}", width=90, command=self._nav_forward)
@@ -1141,28 +1164,26 @@ class XboxGameLookupApp(ctk.CTk):
         self.btn_up.grid(row=0, column=2, padx=(6,4), pady=2)
         self.btn_open_explorer = ctk.CTkButton(buttons_container, text=f"📂 {self.traducir('abrir_explorer')}", width=120, command=self._open_current_in_explorer)
         self.btn_open_explorer.grid(row=0, column=3, padx=(6,4), pady=2)
-        
-        # Fila 2: Navegación y acciones (4 botones)
         self.btn_change_folder = ctk.CTkButton(buttons_container, text=f"🔄 {self.traducir('cambiar_carpeta')}", width=120, command=self._change_browser_folder)
-        self.btn_change_folder.grid(row=1, column=0, padx=(6,4), pady=2)
+        self.btn_change_folder.grid(row=0, column=4, padx=(6,4), pady=2)
         self.btn_select_all = ctk.CTkButton(buttons_container, text=f"✅ {self.traducir('seleccionar_todo')}", width=120, command=self._select_all_files)
-        self.btn_select_all.grid(row=1, column=1, padx=(6,4), pady=2)
+        self.btn_select_all.grid(row=0, column=5, padx=(6,4), pady=2)
+        
+        # Fila 2: Marcado y copia (6 botones)
         self.btn_mark_all = ctk.CTkButton(buttons_container, text=f"☑️ {self.traducir('marcar_visibles')}", width=120, command=self._mark_visible_rows)
-        self.btn_mark_all.grid(row=1, column=2, padx=(6,4), pady=2)
+        self.btn_mark_all.grid(row=1, column=0, padx=(6,4), pady=2)
         self.btn_unmark_all = ctk.CTkButton(buttons_container, text=f"☐ {self.traducir('desmarcar_visibles')}", width=120, command=self._unmark_visible_rows)
-        self.btn_unmark_all.grid(row=1, column=3, padx=(6,4), pady=2)
-        
-        # Fila 3: Acciones de copia (4 botones)
+        self.btn_unmark_all.grid(row=1, column=1, padx=(6,4), pady=2)
         self.btn_copy_rows = ctk.CTkButton(buttons_container, text=f"📋 {self.traducir('copiar_seleccion')}", width=120, command=self._copy_selected_rows_browser)
-        self.btn_copy_rows.grid(row=2, column=0, padx=(6,4), pady=2)
+        self.btn_copy_rows.grid(row=1, column=2, padx=(6,4), pady=2)
         self.btn_copy_marked = ctk.CTkButton(buttons_container, text=f"📦 {self.traducir('copiar_marcados')}", width=120, command=self._copy_checked_items_from_browser)
-        self.btn_copy_marked.grid(row=2, column=1, padx=(6,4), pady=2)
+        self.btn_copy_marked.grid(row=1, column=3, padx=(6,4), pady=2)
         self.btn_generar_lista = ctk.CTkButton(buttons_container, text=f"📝 {self.traducir('generar_lista_marcados')}", width=140, command=self._generar_lista_marcados)
-        self.btn_generar_lista.grid(row=2, column=2, padx=(6,4), pady=2)
+        self.btn_generar_lista.grid(row=1, column=4, padx=(6,4), pady=2)
         self.btn_limpiar_seleccion = ctk.CTkButton(buttons_container, text=f"🗑️ {self.traducir('limpiar_seleccion')}", width=120, command=self._limpiar_lista_cargada)
-        self.btn_limpiar_seleccion.grid(row=2, column=3, padx=(6,4), pady=2)
+        self.btn_limpiar_seleccion.grid(row=1, column=5, padx=(6,4), pady=2)
         
-        # Fila 4: Acción de eliminación
+        # Fila 3: Acciones avanzadas (6 botones)
         self.btn_eliminar_marcados = ctk.CTkButton(
             buttons_container, 
             text=f"🗑️ {self.traducir('eliminar_marcados')}", 
@@ -1171,7 +1192,37 @@ class XboxGameLookupApp(ctk.CTk):
             fg_color="#d32f2f",
             hover_color="#b71c1c"
         )
-        self.btn_eliminar_marcados.grid(row=3, column=0, padx=(6,4), pady=2, columnspan=2, sticky="w")
+        self.btn_eliminar_marcados.grid(row=2, column=0, padx=(6,4), pady=2)
+        self.btn_comparar_ubicacion = ctk.CTkButton(
+            buttons_container,
+            text=f"🔍 {self.traducir('comparar_ubicacion')}",
+            width=160,
+            command=self._comparar_ubicacion_destino
+        )
+        self.btn_comparar_ubicacion.grid(row=2, column=1, padx=(6,4), pady=2)
+        self.btn_log_transferencias = ctk.CTkButton(
+            buttons_container,
+            text=f"📋 {self.traducir('log_transferencias')}",
+            width=140,
+            command=self._mostrar_log_dialog
+        )
+        self.btn_log_transferencias.grid(row=2, column=2, padx=(6,4), pady=2)
+        self.btn_restaurar_log = ctk.CTkButton(
+            buttons_container,
+            text=f"↩️ {self.traducir('restaurar_desde_log')}",
+            width=160,
+            command=self._restaurar_desde_log,
+            fg_color="#ff9800",
+            hover_color="#f57c00"
+        )
+        self.btn_restaurar_log.grid(row=2, column=3, padx=(6,4), pady=2)
+        self.btn_continuar_log = ctk.CTkButton(
+            buttons_container,
+            text=f"▶️ {self.traducir('continuar_desde_log')}",
+            width=160,
+            command=self._continuar_desde_log
+        )
+        self.btn_continuar_log.grid(row=2, column=4, padx=(6,4), pady=2)
         
         # Guardar anchos originales de los botones del explorador
         self._explorer_button_widths = {
@@ -2537,7 +2588,531 @@ class XboxGameLookupApp(ctk.CTk):
         if not dst_root:
             return
 
+        # Guardar información del destino para el log
+        self._last_copy_destination = dst_root
+        self._last_copy_sources = confirmed_items
         self._copy_items_with_progress(confirmed_items, dest_base=dst_root, keep_names=True, include_top_dir=True)
+
+    def _comparar_ubicacion_destino(self):
+        """
+        Compara los juegos en una ubicación destino con la lista cargada.
+        Marca solo los que faltan o tienen diferencias de tamaño.
+        """
+        if not hasattr(self, "original_game_names") or not self.original_game_names:
+            messagebox.showinfo(
+                self.traducir("info"),
+                "Primero debes cargar una lista de juegos (Pegar lista)"
+            )
+            return
+
+        # Seleccionar carpeta destino
+        dest_folder = filedialog.askdirectory(title=self.traducir("seleccionar_ubicacion_destino"))
+        if not dest_folder:
+            return
+
+        # Crear diálogo de progreso
+        dlg = ctk.CTkToplevel(self)
+        dlg.title(self.traducir("comparando_ubicacion"))
+        dlg.geometry("500x200")
+        dlg.transient(self)
+        dlg.grab_set()
+
+        frame = ctk.CTkFrame(dlg)
+        frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        status_label = ctk.CTkLabel(
+            frame,
+            text=self.traducir("comparando_ubicacion"),
+            font=ctk.CTkFont(size=12)
+        )
+        status_label.pack(pady=(0, 10))
+
+        progress_bar = ctk.CTkProgressBar(frame, width=460, mode="determinate")
+        progress_bar.pack(pady=(0, 10))
+        progress_bar.set(0)
+
+        detail_label = ctk.CTkLabel(
+            frame,
+            text="Escaneando carpeta destino...",
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
+        )
+        detail_label.pack()
+
+        state = {"done": False, "found": [], "missing": [], "size_diff": [], "total_dest": 0}
+
+        def compare_in_thread():
+            # _index_tid y _index_name están definidos globalmente en este módulo
+            # norm_text también está disponible globalmente
+            
+            # Normalizar nombres de la lista original
+            original_normalized = {}
+            for name in self.original_game_names:
+                norm = norm_text(name)
+                original_normalized[norm] = name
+
+            # Escanear carpeta destino (solo primer nivel, sin recursión)
+            dest_games = {}  # {normalized_name: (path, size)}
+            
+            # Crear índice invertido de _index_name para búsquedas rápidas
+            index_name_dict = {}
+            for nname, game_item in _index_name:
+                # Crear múltiples claves para búsqueda rápida
+                words = nname.split()
+                for word in words:
+                    if len(word) > 2:  # Solo palabras significativas
+                        if word not in index_name_dict:
+                            index_name_dict[word] = []
+                        index_name_dict[word].append((nname, game_item))
+            
+            def get_game_name_fast(item_name):
+                """Obtiene el nombre del juego de forma rápida"""
+                # 1. Buscar por Title ID (más rápido)
+                tid_match = re.search(r'([0-9A-Fa-f]{8})', item_name, re.IGNORECASE)
+                if tid_match:
+                    tid = tid_match.group(1).upper()
+                    if tid in _index_tid:
+                        return _index_tid[tid][0].get("name", "")
+                
+                # 2. Buscar por nombre usando índice invertido
+                base_name = os.path.splitext(item_name)[0]
+                norm_base = norm_text(base_name)
+                base_words = [w for w in norm_base.split() if len(w) > 2]
+                
+                if base_words:
+                    # Buscar en índice invertido
+                    candidates = {}
+                    for word in base_words:
+                        if word in index_name_dict:
+                            for nname, game_item in index_name_dict[word]:
+                                if nname not in candidates:
+                                    candidates[nname] = game_item
+                    
+                    # Encontrar la mejor coincidencia
+                    for nname, game_item in candidates.items():
+                        if norm_base == nname or norm_base in nname or nname in norm_base:
+                            return game_item.get("name", "")
+                
+                # 3. Búsqueda lineal como último recurso (solo si no se encontró)
+                for nname, game_item in _index_name:
+                    if nname == norm_base or norm_base in nname or nname in norm_base:
+                        return game_item.get("name", "")
+                
+                return None
+            
+            def calculate_size_fast(path):
+                """Calcula el tamaño de forma rápida usando cache si existe"""
+                # Intentar usar cache primero
+                if hasattr(self, "_folder_size_cache") and path in self._folder_size_cache:
+                    return self._folder_size_cache[path]
+                
+                # Calcular tamaño
+                try:
+                    total = 0
+                    for root, _, files in os.walk(path):
+                        for f in files:
+                            try:
+                                total += os.path.getsize(os.path.join(root, f))
+                            except Exception:
+                                pass
+                    # Guardar en cache
+                    if hasattr(self, "_folder_size_cache"):
+                        self._folder_size_cache[path] = total
+                    return total
+                except Exception:
+                    return 0
+            
+            # Escanear solo el primer nivel (no recursivo)
+            self.after(0, lambda: detail_label.configure(text="Escaneando carpeta destino (solo primer nivel)..."))
+            try:
+                items = os.listdir(dest_folder)
+                total_items = len([item for item in items if os.path.isdir(os.path.join(dest_folder, item))])
+                processed = 0
+                
+                for item in items:
+                    item_path = os.path.join(dest_folder, item)
+                    if os.path.isdir(item_path):
+                        processed += 1
+                        # Actualizar progreso cada 10 carpetas
+                        if processed % 10 == 0 or processed == total_items:
+                            progress = 0.3 + (processed / total_items) * 0.2  # 30% a 50% del progreso total
+                            self.after(0, lambda p=progress, proc=processed, tot=total_items: (
+                                progress_bar.set(p),
+                                detail_label.configure(text=f"Escaneando... {proc}/{tot} carpetas")
+                            ))
+                        
+                        # Obtener nombre del juego (rápido)
+                        game_name = get_game_name_fast(item)
+                        if not game_name:
+                            game_name = item
+                        
+                        # NO calcular tamaño aquí - se calculará solo si es necesario durante la comparación
+                        # Esto hace el escaneo mucho más rápido
+                        size = None  # Se calculará después si es necesario
+                        
+                        norm_name = norm_text(game_name)
+                        if norm_name not in dest_games:
+                            dest_games[norm_name] = []
+                        dest_games[norm_name].append((item_path, size))
+            except Exception as e:
+                pass
+            
+            state["total_dest"] = len(dest_games)
+
+            # Comparar con lista original
+            self.after(0, lambda: detail_label.configure(text="Comparando con lista original..."))
+            progress_bar.set(0.5)
+
+            missing = []
+            size_diff = []
+            found = []
+
+            # Comparar y calcular tamaños solo cuando sea necesario
+            total_to_compare = len(original_normalized)
+            compared = 0
+            
+            for norm_name, original_name in original_normalized.items():
+                compared += 1
+                # Actualizar progreso
+                if compared % 10 == 0 or compared == total_to_compare:
+                    progress = 0.5 + (compared / total_to_compare) * 0.5  # 50% a 100%
+                    self.after(0, lambda p=progress, c=compared, t=total_to_compare: (
+                        progress_bar.set(p),
+                        detail_label.configure(text=f"Comparando... {c}/{t} juegos")
+                    ))
+                
+                if norm_name in dest_games:
+                    # Juego encontrado, verificar tamaño
+                    dest_paths = dest_games[norm_name]
+                    # Buscar el tamaño en la ubicación origen (si está indexado)
+                    source_size = None
+                    if hasattr(self, "_paths_by_name"):
+                        for path in self._paths_by_name.get(original_name, []):
+                            if os.path.exists(path):
+                                # Usar cache si existe
+                                if hasattr(self, "_folder_size_cache") and path in self._folder_size_cache:
+                                    source_size = self._folder_size_cache[path]
+                                else:
+                                    try:
+                                        source_size = sum(
+                                            os.path.getsize(os.path.join(root, f))
+                                            for root, _, files in os.walk(path)
+                                            for f in files
+                                        )
+                                        # Guardar en cache
+                                        if hasattr(self, "_folder_size_cache"):
+                                            self._folder_size_cache[path] = source_size
+                                    except Exception:
+                                        pass
+                                if source_size is not None:
+                                    break
+                    
+                    # Comparar tamaños solo si tenemos tamaño origen
+                    if source_size is not None:
+                        for dest_path, dest_size in dest_paths:
+                            # Calcular tamaño destino solo si es necesario (si es None)
+                            if dest_size is None:
+                                dest_size = calculate_size_fast(dest_path)
+                                # Actualizar en el diccionario
+                                for i, (dp, ds) in enumerate(dest_paths):
+                                    if dp == dest_path:
+                                        dest_paths[i] = (dest_path, dest_size)
+                                        break
+                            
+                            if abs(dest_size - source_size) > 1024 * 1024:  # Diferencia > 1MB
+                                size_diff.append((original_name, dest_path, source_size, dest_size))
+                    else:
+                        # No se puede comparar tamaño, pero está presente
+                        found.append(original_name)
+                else:
+                    # Juego faltante
+                    missing.append(original_name)
+
+            state["missing"] = missing
+            state["size_diff"] = size_diff
+            state["found"] = found
+            state["done"] = True
+
+            # Marcar los faltantes y con diferencia de tamaño
+            self.after(0, lambda: (
+                progress_bar.set(1.0),
+                detail_label.configure(text="Marcando faltantes y con diferencias..."),
+                self._marcar_faltantes_y_diferencias(missing, size_diff, state),
+                dlg.destroy(),
+                self._mostrar_resultado_comparacion(state)
+            ))
+
+        threading.Thread(target=compare_in_thread, daemon=True).start()
+
+    def _marcar_faltantes_y_diferencias(self, missing, size_diff, state):
+        """Marca los juegos faltantes y con diferencias de tamaño"""
+        # Limpiar marcados actuales
+        self._checked_paths.clear()
+
+        # Marcar faltantes
+        if hasattr(self, "_paths_by_name") and self._paths_by_name:
+            for name in missing:
+                # Normalizar nombre para búsqueda
+                norm_name = norm_text(name)
+                found_paths = False
+                
+                # Buscar exacto primero
+                if norm_name in self._paths_by_name:
+                    for path in self._paths_by_name[norm_name]:
+                        path_norm = os.path.normpath(path)
+                        if os.path.exists(path_norm):
+                            self._checked_paths.add(path_norm)
+                            found_paths = True
+                
+                # Si no se encontró, búsqueda flexible por palabras
+                if not found_paths:
+                    name_words = [w for w in norm_name.split() if len(w) > 2]
+                    if name_words:
+                        for key_name, paths in self._paths_by_name.items():
+                            # Verificar si al menos 2 palabras coinciden
+                            matching_words = sum(1 for w in name_words if w in key_name)
+                            if matching_words >= min(2, len(name_words)):
+                                for path in paths:
+                                    path_norm = os.path.normpath(path)
+                                    if os.path.exists(path_norm):
+                                        self._checked_paths.add(path_norm)
+                                        found_paths = True
+                                if found_paths:
+                                    break
+
+        # Marcar con diferencias de tamaño
+        for name, dest_path, source_size, dest_size in size_diff:
+            if hasattr(self, "_paths_by_name") and self._paths_by_name:
+                # Normalizar nombre
+                norm_name = norm_text(name)
+                found_paths = False
+                
+                # Buscar exacto primero
+                if norm_name in self._paths_by_name:
+                    for path in self._paths_by_name[norm_name]:
+                        path_norm = os.path.normpath(path)
+                        if os.path.exists(path_norm):
+                            self._checked_paths.add(path_norm)
+                            found_paths = True
+                
+                # Si no se encontró, búsqueda flexible
+                if not found_paths:
+                    name_words = [w for w in norm_name.split() if len(w) > 2]
+                    if name_words:
+                        for key_name, paths in self._paths_by_name.items():
+                            matching_words = sum(1 for w in name_words if w in key_name)
+                            if matching_words >= min(2, len(name_words)):
+                                for path in paths:
+                                    path_norm = os.path.normpath(path)
+                                    if os.path.exists(path_norm):
+                                        self._checked_paths.add(path_norm)
+                                        found_paths = True
+                                if found_paths:
+                                    break
+
+        # Actualizar UI
+        self._update_counts()
+        # Refrescar la vista actual para mostrar los marcados
+        current_folder = getattr(self, "current_folder", None)
+        if current_folder:
+            self._list_folder(current_folder)
+        else:
+            self._refresh_current_folder()
+
+    def _mostrar_resultado_comparacion(self, state):
+        """Muestra el resultado de la comparación"""
+        msg = (
+            f"{self.traducir('comparacion_completada')}\n\n"
+            f"{self.traducir('juegos_encontrados_destino').format(count=state['total_dest'])}\n"
+            f"{self.traducir('juegos_faltantes').format(count=len(state['missing']))}\n"
+            f"{self.traducir('juegos_diferencia_tamano').format(count=len(state['size_diff']))}\n\n"
+            f"Se han marcado {len(state['missing']) + len(state['size_diff'])} juegos para copiar."
+        )
+        messagebox.showinfo(self.traducir("comparacion_completada"), msg)
+        self.status_label.configure(
+            text=f"{self.traducir('comparacion_completada')} - {len(state['missing'])} faltantes, {len(state['size_diff'])} con diferencias",
+            text_color="green"
+        )
+
+    def _get_transfer_log_path(self):
+        """Obtiene la ruta del archivo de log de transferencias"""
+        import tempfile
+        log_dir = os.path.join(tempfile.gettempdir(), "xbox_game_finder")
+        os.makedirs(log_dir, exist_ok=True)
+        return os.path.join(log_dir, "transfer_log.json")
+
+    def _save_transfer_log(self, sources, destination, copied_files):
+        """Guarda un log de la transferencia"""
+        log_path = self._get_transfer_log_path()
+        log_data = {
+            "timestamp": time.time(),
+            "destination": destination,
+            "sources": sources,
+            "copied_files": copied_files
+        }
+        try:
+            with open(log_path, 'w', encoding='utf-8') as f:
+                json.dump(log_data, f, indent=2, ensure_ascii=False)
+            return log_path
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo guardar el log: {e}")
+            return None
+
+    def _load_transfer_log(self):
+        """Carga el log de transferencias"""
+        log_path = self._get_transfer_log_path()
+        if not os.path.exists(log_path):
+            return None
+        try:
+            with open(log_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def _restaurar_desde_log(self):
+        """Elimina los archivos que se copiaron según el log"""
+        log_data = self._load_transfer_log()
+        if not log_data:
+            messagebox.showinfo(self.traducir("info"), self.traducir("log_vacio"))
+            return
+
+        copied_files = log_data.get("copied_files", [])
+        if not copied_files:
+            messagebox.showinfo(self.traducir("info"), self.traducir("log_vacio"))
+            return
+
+        respuesta = messagebox.askyesno(
+            "Restaurar desde log",
+            f"¿Estás seguro de que deseas eliminar {len(copied_files)} archivo(s)/carpeta(s) que se copiaron?\n\n"
+            f"Destino: {log_data.get('destination', 'N/A')}\n\n"
+            "Esta acción no se puede deshacer."
+        )
+        if not respuesta:
+            return
+
+        deleted = 0
+        failed = 0
+        errors = []
+
+        for file_path in copied_files:
+            try:
+                if os.path.isdir(file_path):
+                    shutil.rmtree(file_path)
+                else:
+                    os.remove(file_path)
+                deleted += 1
+            except Exception as e:
+                failed += 1
+                errors.append(f"{os.path.basename(file_path)}: {str(e)}")
+
+        msg = f"{self.traducir('log_restaurado').format(deleted=deleted)}"
+        if failed > 0:
+            msg += f"\n{failed} elemento(s) no se pudieron eliminar"
+        messagebox.showinfo("Restauración completada", msg)
+        self.status_label.configure(
+            text=f"Log restaurado: {deleted} elementos eliminados",
+            text_color="green"
+        )
+
+    def _continuar_desde_log(self):
+        """Marca solo los archivos que faltan según el log"""
+        log_data = self._load_transfer_log()
+        if not log_data:
+            messagebox.showinfo(self.traducir("info"), self.traducir("log_vacio"))
+            return
+
+        sources = log_data.get("sources", [])
+        copied_files = log_data.get("copied_files", [])
+        destination = log_data.get("destination", "")
+
+        if not sources:
+            messagebox.showinfo(self.traducir("info"), "El log no contiene información de origen")
+            return
+
+        # Crear conjunto de archivos copiados (normalizado)
+        # Los archivos copiados son carpetas destino, necesitamos comparar con las fuentes
+        copied_set = set(os.path.normpath(f) for f in copied_files if os.path.exists(f))
+        
+        # Obtener nombres base de las carpetas copiadas
+        copied_basenames = set()
+        for f in copied_files:
+            if os.path.exists(f):
+                copied_basenames.add(os.path.basename(os.path.normpath(f)))
+
+        # Marcar solo los que no se copiaron
+        self._checked_paths.clear()
+        marked = 0
+
+        for source in sources:
+            if not os.path.exists(source):
+                continue
+            source_norm = os.path.normpath(source)
+            source_basename = os.path.basename(source_norm)
+            
+            # Verificar si este origen ya fue copiado (por nombre base)
+            if source_basename not in copied_basenames:
+                self._checked_paths.add(source)
+                marked += 1
+
+        self._update_counts()
+        self._refresh_current_folder()
+
+        messagebox.showinfo(
+            "Continuar desde log",
+            f"{self.traducir('log_continuado').format(count=marked)}\n\n"
+            f"Se han marcado {marked} elemento(s) que faltan copiar."
+        )
+        self.status_label.configure(
+            text=f"Continuando desde log: {marked} elementos marcados",
+            text_color="green"
+        )
+
+    def _mostrar_log_dialog(self):
+        """Muestra información del log de transferencias"""
+        log_data = self._load_transfer_log()
+        if not log_data:
+            messagebox.showinfo(self.traducir("info"), self.traducir("log_vacio"))
+            return
+
+        dlg = ctk.CTkToplevel(self)
+        dlg.title(self.traducir("log_transferencias"))
+        dlg.geometry("600x500")
+        dlg.grab_set()
+
+        frame = ctk.CTkFrame(dlg)
+        frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # Información del log
+        timestamp = log_data.get("timestamp", 0)
+        from datetime import datetime
+        fecha = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S") if timestamp else "N/A"
+        
+        info_text = (
+            f"Fecha: {fecha}\n"
+            f"Destino: {log_data.get('destination', 'N/A')}\n"
+            f"Orígenes: {len(log_data.get('sources', []))} elemento(s)\n"
+            f"Archivos copiados: {len(log_data.get('copied_files', []))} elemento(s)\n"
+        )
+
+        ctk.CTkLabel(frame, text=info_text, font=ctk.CTkFont(size=12), justify="left").pack(pady=(0, 10))
+
+        # Lista de archivos copiados
+        ctk.CTkLabel(frame, text="Archivos/Carpetas copiados:", font=ctk.CTkFont(size=11, weight="bold")).pack(anchor="w", pady=(10, 5))
+        
+        textbox = ctk.CTkTextbox(frame, width=560, height=250)
+        textbox.pack(pady=(0, 10))
+        
+        copied_files = log_data.get("copied_files", [])
+        if copied_files:
+            textbox.insert("1.0", "\n".join(copied_files))
+        else:
+            textbox.insert("1.0", "No hay archivos registrados")
+        textbox.configure(state="disabled")
+
+        def on_close():
+            dlg.destroy()
+
+        ctk.CTkButton(frame, text="Cerrar", command=on_close).pack()
 
     def _eliminar_marcados(self):
         """
@@ -2722,6 +3297,8 @@ class XboxGameLookupApp(ctk.CTk):
         state = {"copied":0,"files_done":0,"speed":0.0,"eta":None,"error":None,"done":False,"canceled":False,"current_rel":"—"}
         start_time = time.time()
 
+        copied_files_list = []  # Lista de archivos copiados para el log
+
         def worker():
             try:
                 for srcfile, rel, size in file_list:
@@ -2733,6 +3310,8 @@ class XboxGameLookupApp(ctk.CTk):
                     os.makedirs(os.path.dirname(destfile), exist_ok=True)
                     try: shutil.copy2(srcfile, destfile)
                     except Exception: shutil.copyfile(srcfile, destfile)
+                    # Agregar a la lista de copiados
+                    copied_files_list.append(destfile)
                     state["copied"] += size
                     state["files_done"] += 1
                     elapsed = max(time.time() - start_time, 0.001)
@@ -2740,6 +3319,29 @@ class XboxGameLookupApp(ctk.CTk):
                     if total_bytes > 0 and state["speed"] > 0:
                         rem = max(total_bytes - state["copied"], 0)
                         state["eta"] = rem / state["speed"]
+                
+                # Guardar log si hay archivos copiados
+                if copied_files_list and not state["canceled"]:
+                    # Obtener las carpetas únicas copiadas (no todos los archivos individuales)
+                    copied_dirs = set()
+                    for f in copied_files_list:
+                        if os.path.isdir(f):
+                            copied_dirs.add(f)
+                        else:
+                            # Agregar el directorio padre
+                            copied_dirs.add(os.path.dirname(f))
+                    
+                    # Convertir a lista y normalizar
+                    copied_dirs_list = [os.path.normpath(d) for d in copied_dirs]
+                    
+                    # Guardar log
+                    if hasattr(self, "_last_copy_sources") and hasattr(self, "_last_copy_destination"):
+                        self._save_transfer_log(
+                            self._last_copy_sources,
+                            self._last_copy_destination,
+                            copied_dirs_list
+                        )
+                
                 state["done"] = True
             except Exception as e:
                 state["error"] = str(e); state["done"] = True
@@ -3482,6 +4084,14 @@ class XboxGameLookupApp(ctk.CTk):
     def _apply_game_list_results(self, found_paths: set[str], missing_games: list[str], total_games: int, found_games_count: int, original_game_names: list[str] = None):
         """Aplica los resultados del procesamiento de la lista en el hilo principal"""
         try:
+            # Guardar la lista original de nombres de juegos para uso futuro
+            if original_game_names:
+                self.original_game_names = original_game_names.copy()
+            else:
+                # Si no se proporciona, inicializar como lista vacía
+                if not hasattr(self, "original_game_names"):
+                    self.original_game_names = []
+            
             # 4) Actualiza los checks - normalizar todos los paths
             self._checked_paths.clear()
             # Normalizar todos los paths para asegurar coincidencias exactas
