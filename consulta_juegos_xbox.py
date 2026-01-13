@@ -96,6 +96,14 @@ traducciones = {
         "cambiar_carpeta": "Cambiar…",
         "copiar_seleccion": "Copiar selección",
         "copiar_marcados": "Copiar marcados",
+        "eliminar_marcados": "Eliminar marcados",
+        "eliminar_marcados_tooltip": "Elimina permanentemente los elementos marcados",
+        "eliminar_marcados_confirmacion": "¿Estás seguro de que deseas eliminar {count} elemento(s) marcado(s)?\n\nEsta acción no se puede deshacer.",
+        "eliminando": "Eliminando...",
+        "eliminacion_completada": "Eliminación completada",
+        "eliminacion_error": "Error al eliminar",
+        "elementos_eliminados": "{count} elemento(s) eliminado(s) correctamente",
+        "elementos_fallidos": "{count} elemento(s) no se pudieron eliminar",
         "seleccionar_todo": "Seleccionar todo",
         "nombre": "Nombre",
         "tipo": "Tipo",
@@ -200,6 +208,14 @@ traducciones = {
         "cambiar_carpeta": "Change…",
         "copiar_seleccion": "Copy selection",
         "copiar_marcados": "Copy checked",
+        "eliminar_marcados": "Delete checked",
+        "eliminar_marcados_tooltip": "Permanently deletes the checked items",
+        "eliminar_marcados_confirmacion": "Are you sure you want to delete {count} checked item(s)?\n\nThis action cannot be undone.",
+        "eliminando": "Deleting...",
+        "eliminacion_completada": "Deletion completed",
+        "eliminacion_error": "Deletion error",
+        "elementos_eliminados": "{count} item(s) deleted successfully",
+        "elementos_fallidos": "{count} item(s) could not be deleted",
         "seleccionar_todo": "Select all",
         "nombre": "Name",
         "tipo": "Type",
@@ -298,6 +314,14 @@ traducciones = {
         "cambiar_carpeta": "Alterar…",
         "copiar_seleccion": "Copiar seleção",
         "copiar_marcados": "Copiar marcados",
+        "eliminar_marcados": "Excluir marcados",
+        "eliminar_marcados_tooltip": "Exclui permanentemente os itens marcados",
+        "eliminar_marcados_confirmacion": "Tem certeza de que deseja excluir {count} item(ns) marcado(s)?\n\nEsta ação não pode ser desfeita.",
+        "eliminando": "Excluindo...",
+        "eliminacion_completada": "Exclusão concluída",
+        "eliminacion_error": "Erro ao excluir",
+        "elementos_eliminados": "{count} item(ns) excluído(s) com sucesso",
+        "elementos_fallidos": "{count} item(ns) não puderam ser excluídos",
         "seleccionar_todo": "Selecionar tudo",
         "nombre": "Nome",
         "tipo": "Tipo",
@@ -1137,6 +1161,17 @@ class XboxGameLookupApp(ctk.CTk):
         self.btn_generar_lista.grid(row=2, column=2, padx=(6,4), pady=2)
         self.btn_limpiar_seleccion = ctk.CTkButton(buttons_container, text=f"🗑️ {self.traducir('limpiar_seleccion')}", width=120, command=self._limpiar_lista_cargada)
         self.btn_limpiar_seleccion.grid(row=2, column=3, padx=(6,4), pady=2)
+        
+        # Fila 4: Acción de eliminación
+        self.btn_eliminar_marcados = ctk.CTkButton(
+            buttons_container, 
+            text=f"🗑️ {self.traducir('eliminar_marcados')}", 
+            width=140, 
+            command=self._eliminar_marcados,
+            fg_color="#d32f2f",
+            hover_color="#b71c1c"
+        )
+        self.btn_eliminar_marcados.grid(row=3, column=0, padx=(6,4), pady=2, columnspan=2, sticky="w")
         
         # Guardar anchos originales de los botones del explorador
         self._explorer_button_widths = {
@@ -2503,6 +2538,130 @@ class XboxGameLookupApp(ctk.CTk):
             return
 
         self._copy_items_with_progress(confirmed_items, dest_base=dst_root, keep_names=True, include_top_dir=True)
+
+    def _eliminar_marcados(self):
+        """
+        Elimina permanentemente todos los elementos marcados.
+        Muestra un diálogo de confirmación y una barra de progreso durante la eliminación.
+        """
+        if not self._checked_paths:
+            messagebox.showinfo(self.traducir("info"), self.traducir("ninguno_marcado"))
+            return
+
+        # Filtrar solo los que existen
+        items = [p for p in self._checked_paths if os.path.exists(p)]
+        if not items:
+            messagebox.showinfo(self.traducir("info"), self.traducir("ninguno_marcado"))
+            return
+
+        # Mostrar diálogo de confirmación
+        respuesta = messagebox.askyesno(
+            self.traducir("eliminar_marcados"),
+            self.traducir("eliminar_marcados_confirmacion").format(count=len(items))
+        )
+        if not respuesta:
+            return
+
+        # Crear diálogo de progreso
+        dlg = ctk.CTkToplevel(self)
+        dlg.title(self.traducir("eliminando"))
+        dlg.geometry("500x200")
+        dlg.transient(self)
+        dlg.grab_set()
+
+        frame = ctk.CTkFrame(dlg)
+        frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        status_label = ctk.CTkLabel(
+            frame,
+            text=f"{self.traducir('eliminando')} {len(items)} elemento(s)...",
+            font=ctk.CTkFont(size=12)
+        )
+        status_label.pack(pady=(0, 10))
+
+        progress_bar = ctk.CTkProgressBar(frame, width=460, mode="determinate")
+        progress_bar.pack(pady=(0, 10))
+        progress_bar.set(0)
+
+        detail_label = ctk.CTkLabel(
+            frame,
+            text="Iniciando...",
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
+        )
+        detail_label.pack()
+
+        state = {"done": False, "deleted": 0, "failed": 0, "errors": []}
+
+        def delete_in_thread():
+            import shutil
+            total = len(items)
+            for i, item_path in enumerate(items):
+                try:
+                    # Actualizar progreso (usar valores por defecto para evitar problemas de closure)
+                    def update_progress(idx=i, total_items=total, path=item_path):
+                        progress_bar.set((idx + 1) / total_items)
+                        detail_label.configure(text=f"Eliminando: {os.path.basename(path)}...")
+                    self.after(0, update_progress)
+
+                    # Eliminar archivo o carpeta
+                    if os.path.isdir(item_path):
+                        shutil.rmtree(item_path)
+                    else:
+                        os.remove(item_path)
+
+                    state["deleted"] += 1
+                    # Remover de los marcados
+                    if item_path in self._checked_paths:
+                        self._checked_paths.remove(item_path)
+
+                except Exception as e:
+                    state["failed"] += 1
+                    state["errors"].append(f"{os.path.basename(item_path)}: {str(e)}")
+
+            state["done"] = True
+            self.after(0, lambda: (
+                dlg.destroy(),
+                self._refresh_current_folder(),
+                self._update_counts(),
+                self._show_delete_result(state["deleted"], state["failed"], state["errors"])
+            ))
+
+        threading.Thread(target=delete_in_thread, daemon=True).start()
+
+    def _show_delete_result(self, deleted_count, failed_count, errors):
+        """Muestra el resultado de la eliminación"""
+        if failed_count == 0:
+            messagebox.showinfo(
+                self.traducir("eliminacion_completada"),
+                self.traducir("elementos_eliminados").format(count=deleted_count)
+            )
+            self.status_label.configure(
+                text=f"{self.traducir('eliminacion_completada')} ({deleted_count} elementos)",
+                text_color="green"
+            )
+        else:
+            error_msg = self.traducir("elementos_eliminados").format(count=deleted_count)
+            if failed_count > 0:
+                error_msg += f"\n{self.traducir('elementos_fallidos').format(count=failed_count)}"
+                if errors:
+                    error_msg += "\n\nErrores:\n" + "\n".join(errors[:10])
+                    if len(errors) > 10:
+                        error_msg += f"\n... y {len(errors) - 10} más"
+            
+            messagebox.showwarning(
+                self.traducir("eliminacion_error"),
+                error_msg
+            )
+            self.status_label.configure(
+                text=f"{self.traducir('eliminacion_completada')} ({deleted_count} eliminados, {failed_count} fallidos)",
+                text_color="orange"
+            )
+
+    def _refresh_current_folder(self):
+        """Refresca la vista del explorador actual"""
+        if hasattr(self, "current_folder") and self.current_folder:
+            self._list_folder(self.current_folder)
 
     # ---- Implementación interna (tu diálogo de progreso propio)
     def _copy_items_with_progress_internal(self, sources, dest_base, keep_names=True, include_top_dir=True):
