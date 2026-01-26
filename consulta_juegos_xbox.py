@@ -46,6 +46,7 @@ DEFAULT_JSON_GLOBS = ["*.json"]  # json(s) locales que se cargan automáticament
 traducciones = {
     "es": {
         "modo_oscuro": "Modo Oscuro",
+        "solo_marcados": "Solo marcados",
         "idioma": "Idioma",
         "title_ids": "Title IDs (Local)",
         "ingresa_texto": "Ingresa Title ID o Nombre del juego:",
@@ -181,6 +182,7 @@ traducciones = {
     },
     "en": {
         "modo_oscuro": "Dark Mode",
+        "solo_marcados": "Only marked",
         "idioma": "Language",
         "title_ids": "Title IDs (Local)",
         "ingresa_texto": "Enter Title ID or Game Name:",
@@ -287,6 +289,7 @@ traducciones = {
     },
     "pt": {
         "modo_oscuro": "Modo Escuro",
+        "solo_marcados": "Apenas marcados",
         "idioma": "Idioma",
         "title_ids": "Title IDs (Local)",
         "ingresa_texto": "Digite Title ID ou nome do jogo:",
@@ -583,6 +586,7 @@ class XboxGameLookupApp(ctk.CTk):
         # Preferencias
         self.idioma_actual = self._detectar_idioma_sistema()
         self.modo_oscuro_inicial = self._detectar_modo_oscuro_sistema()
+        self.solo_marcados_inicial = False  # Por defecto mostrar todos
         self.copy_method = "explorer"  # "auto" | "explorer" | "internal"
         self.nombre_cliente = ""  # Nombre del cliente personalizable
         self._cargar_config()
@@ -803,6 +807,7 @@ class XboxGameLookupApp(ctk.CTk):
         config = {
             "idioma": self.idioma_actual,
             "modo_oscuro": self.switch_var.get(),
+            "solo_marcados": getattr(self, "switch_solo_marcados_var", ctk.BooleanVar(value=False)).get(),
             "scan_roots": getattr(self, "_scan_roots", []),
             "copy_method": self.copy_method,
             "nombre_cliente": getattr(self, "nombre_cliente", ""),
@@ -820,6 +825,7 @@ class XboxGameLookupApp(ctk.CTk):
                     config = json.load(f)
                 if config.get("idioma") in traducciones: self.idioma_actual = config["idioma"]
                 if config.get("modo_oscuro") is not None: self.modo_oscuro_inicial = config["modo_oscuro"]
+                if config.get("solo_marcados") is not None: self.solo_marcados_inicial = config["solo_marcados"]
                 self._scan_roots = config.get("scan_roots", [])
                 if config.get("copy_method") in ("auto","explorer","internal"):
                     self.copy_method = config["copy_method"]
@@ -950,6 +956,13 @@ class XboxGameLookupApp(ctk.CTk):
         ctk.set_appearance_mode("dark" if self.switch_var.get() else "light")
         self._aplicar_estilo_treeview("dark" if self.switch_var.get() else "light")
         self._guardar_config()
+    
+    def _toggle_solo_marcados(self):
+        """Filtra el explorador para mostrar solo los elementos marcados"""
+        self._guardar_config()
+        # Refrescar la vista actual
+        if hasattr(self, "_current_entries") and self._current_entries:
+            self._render_files(self._current_entries)
 
     # ---------- copiar texto ----------
     def _copiar_fila(self, tree):
@@ -1011,6 +1024,10 @@ class XboxGameLookupApp(ctk.CTk):
         self.switch = ctk.CTkSwitch(left, text=self.traducir("modo_oscuro"),
                                     variable=self.switch_var, command=self._toggle_mode)
         self.switch.pack(side="left", padx=(10, 10))
+        self.switch_solo_marcados_var = ctk.BooleanVar(value=self.solo_marcados_inicial)
+        self.switch_solo_marcados = ctk.CTkSwitch(left, text=self.traducir("solo_marcados"),
+                                                  variable=self.switch_solo_marcados_var, command=self._toggle_solo_marcados)
+        self.switch_solo_marcados.pack(side="left", padx=(10, 10))
         self.idioma_menu_label = ctk.CTkLabel(left, text=f"🌐 {self.traducir('idioma')}:")
         self.idioma_menu_label.pack(side="left", padx=(10, 5))
         self.selector_idioma = ctk.CTkOptionMenu(left, values=["Español", "English", "Português"],
@@ -3633,6 +3650,10 @@ class XboxGameLookupApp(ctk.CTk):
         # Acceso local para velocidad
         checked = self._checked_paths
         sep = os.sep
+        
+        # Filtrar solo marcados si el switch está activo
+        if hasattr(self, "switch_solo_marcados_var") and self.switch_solo_marcados_var.get():
+            entries = [e for e in entries if os.path.normpath(e[5]) in checked]
 
         for name, game_name, ftype, size, mtime, path in entries:
             # Normalizar el path para comparación
