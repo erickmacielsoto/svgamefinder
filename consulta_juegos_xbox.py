@@ -179,6 +179,12 @@ traducciones = {
         "auto_explorer": "Auto (Explorer si hay)",
         "explorer_forzar": "Explorer (forzar)",
         "interno": "Interno (propio)",
+        # Ordenamiento
+        "ordenar_por": "Ordenar por:",
+        "orden_nombre": "Nombre",
+        "orden_tamano": "Tamaño",
+        "orden_tipo": "Tipo",
+        "orden_modificado": "Modificado",
     },
     "en": {
         "modo_oscuro": "Dark Mode",
@@ -286,6 +292,12 @@ traducciones = {
         "auto_explorer": "Auto (Explorer if available)",
         "explorer_forzar": "Explorer (force)",
         "interno": "Internal (built-in)",
+        # Ordenamiento
+        "ordenar_por": "Sort by:",
+        "orden_nombre": "Name",
+        "orden_tamano": "Size",
+        "orden_tipo": "Type",
+        "orden_modificado": "Modified",
     },
     "pt": {
         "modo_oscuro": "Modo Escuro",
@@ -393,6 +405,12 @@ traducciones = {
         "auto_explorer": "Auto (Explorer se houver)",
         "explorer_forzar": "Explorer (forçar)",
         "interno": "Interno",
+        # Ordenamiento
+        "ordenar_por": "Ordenar por:",
+        "orden_nombre": "Nome",
+        "orden_tamano": "Tamanho",
+        "orden_tipo": "Tipo",
+        "orden_modificado": "Modificado",
     }
 }
 
@@ -685,6 +703,7 @@ class XboxGameLookupApp(ctk.CTk):
         self._files_row_by_path = {}
         self._current_entries = []
         self._filter_job = None
+        self._sort_order = "nombre"  # "nombre", "tamano", "tipo", "modificado"
         # _checked_paths ya se inicializó antes de _setup_ui()
         self._user_changed_folder = False  # Rastrea si el usuario cambió manualmente la carpeta
 
@@ -1256,18 +1275,40 @@ class XboxGameLookupApp(ctk.CTk):
             'btn_copy_marked': 120,
         }
 
-        # Filtro
+        # Filtro y ordenamiento
         filter_bar = ctk.CTkFrame(self.frame_explorer, fg_color="transparent"); filter_bar.pack(fill="x", padx=6, pady=(0,6))
         self.files_filter_var = ctk.StringVar(value="")
         self.files_filter_entry = ctk.CTkEntry(filter_bar, textvariable=self.files_filter_var,
-                                               placeholder_text=self.traducir("filtro_placeholder"), width=520)
+                                               placeholder_text=self.traducir("filtro_placeholder"), width=400)
         self.files_filter_entry.pack(side="left", padx=(0,6))
         self.files_filter_entry.bind("<Return>", lambda e: self._apply_files_filter())
         self.files_filter_entry.bind("<KeyRelease>", lambda e: self._apply_files_filter(debounce=True))
         self.btn_filter = ctk.CTkButton(filter_bar, text=f"🔍 {self.traducir('aplicar_filtro')}", width=90, command=self._apply_files_filter)
         self.btn_filter.pack(side="left", padx=(0,6))
         self.btn_filter_clear = ctk.CTkButton(filter_bar, text=f"🧹 {self.traducir('limpiar_filtro')}", width=90, command=self._clear_files_filter)
-        self.btn_filter_clear.pack(side="left")
+        self.btn_filter_clear.pack(side="left", padx=(0,12))
+        
+        # Ordenamiento
+        self.sort_label = ctk.CTkLabel(filter_bar, text=self.traducir("ordenar_por"))
+        self.sort_label.pack(side="left", padx=(0,6))
+        sort_options = [
+            ("nombre", self.traducir("orden_nombre")),
+            ("tamano", self.traducir("orden_tamano")),
+            ("tipo", self.traducir("orden_tipo")),
+            ("modificado", self.traducir("orden_modificado"))
+        ]
+        # Mapeo de valores mostrados a valores internos
+        self._sort_value_map = {label: value for value, label in sort_options}
+        self._sort_reverse_map = {value: label for value, label in sort_options}
+        self.sort_order_var = ctk.StringVar(value=self._sort_reverse_map.get("nombre", sort_options[0][1]))
+        self.sort_combo = ctk.CTkComboBox(
+            filter_bar,
+            values=[label for _, label in sort_options],
+            variable=self.sort_order_var,
+            width=120,
+            command=self._on_sort_changed
+        )
+        self.sort_combo.pack(side="left")
 
         # Tabla de archivos (con columna de check y nombre de juego)
         wrap_files = ctk.CTkFrame(self.frame_explorer, fg_color="transparent"); wrap_files.pack(fill="both", expand=True)
@@ -1331,6 +1372,23 @@ class XboxGameLookupApp(ctk.CTk):
         self.files_filter_entry.configure(placeholder_text=self.traducir("filtro_placeholder"))
         self.btn_filter.configure(text=f"🔍 {self.traducir('aplicar_filtro')}")
         self.btn_filter_clear.configure(text=f"🧹 {self.traducir('limpiar_filtro')}")
+        # Actualizar ComboBox de ordenamiento
+        if hasattr(self, "sort_label"):
+            self.sort_label.configure(text=self.traducir("ordenar_por"))
+        if hasattr(self, "sort_combo"):
+            sort_options = [
+                ("nombre", self.traducir("orden_nombre")),
+                ("tamano", self.traducir("orden_tamano")),
+                ("tipo", self.traducir("orden_tipo")),
+                ("modificado", self.traducir("orden_modificado"))
+            ]
+            self._sort_value_map = {label: value for value, label in sort_options}
+            self._sort_reverse_map = {value: label for value, label in sort_options}
+            # Obtener el valor actual interno y actualizar el texto mostrado
+            current_value = self.sort_order_var.get()
+            current_internal = self._sort_value_map.get(current_value, "nombre")
+            self.sort_combo.configure(values=[label for _, label in sort_options])
+            self.sort_order_var.set(self._sort_reverse_map.get(current_internal, sort_options[0][1]))
         self.tree_files.heading("mark", text=self.traducir("col_sel"))
         self.tree_files.heading("name", text=self.traducir("nombre"))
         self.tree_files.heading("type", text=self.traducir("tipo"))
@@ -2043,7 +2101,8 @@ class XboxGameLookupApp(ctk.CTk):
                     path_norm = os.path.normpath(e.path)
                     entries.append((e.name, game_name, ftype, size, mtime, path_norm))
 
-            entries.sort(key=lambda x: (x[2] != "Carpeta", x[0].lower()))
+            # Ordenar según el criterio seleccionado
+            self._sort_entries(entries)
             self._current_entries = entries
             self._render_files(entries)
             self._clear_files_filter()
@@ -2053,6 +2112,31 @@ class XboxGameLookupApp(ctk.CTk):
         except Exception as e:
             messagebox.showerror(self.traducir("error"), str(e))
 
+    def _sort_entries(self, entries):
+        """Ordena las entradas según el criterio seleccionado"""
+        sort_order = self._sort_value_map.get(self.sort_order_var.get(), "nombre")
+        
+        if sort_order == "nombre":
+            # Ordenar por tipo (carpetas primero) y luego por nombre
+            entries.sort(key=lambda x: (x[2] != "Carpeta", x[0].lower()))
+        elif sort_order == "tamano":
+            # Ordenar por tipo (carpetas primero) y luego por tamaño (mayor primero)
+            # Manejar None como 0 para elementos sin tamaño calculado
+            entries.sort(key=lambda x: (x[2] != "Carpeta", -(x[3] if x[3] is not None else 0), x[0].lower()))
+        elif sort_order == "tipo":
+            # Ordenar por tipo y luego por nombre
+            entries.sort(key=lambda x: (x[2], x[0].lower()))
+        elif sort_order == "modificado":
+            # Ordenar por tipo (carpetas primero) y luego por fecha de modificación (más reciente primero)
+            entries.sort(key=lambda x: (x[2] != "Carpeta", -x[4], x[0].lower()))
+
+    def _on_sort_changed(self, value):
+        """Se llama cuando cambia el criterio de ordenamiento"""
+        if hasattr(self, "_current_entries") and self._current_entries:
+            # Reordenar las entradas actuales
+            self._sort_entries(self._current_entries)
+            # Re-renderizar
+            self._render_files(self._current_entries)
 
     def _apply_files_filter(self, debounce=False):
         if debounce:
@@ -2335,8 +2419,22 @@ class XboxGameLookupApp(ctk.CTk):
                 self._folder_size_cache[path] = total
                 def _apply():
                     if getattr(self, "current_folder", None) != folder: return
+                    # Actualizar el tamaño en _current_entries
+                    if hasattr(self, "_current_entries"):
+                        for i, entry in enumerate(self._current_entries):
+                            if entry[5] == path:  # path es el último elemento (índice 5)
+                                # Actualizar la tupla: (name, game_name, ftype, size, mtime, path)
+                                self._current_entries[i] = (entry[0], entry[1], entry[2], total, entry[4], entry[5])
+                                break
+                    # Actualizar la visualización
                     row_id = self._files_row_by_path.get(path)
                     if row_id: self.tree_files.set(row_id, "size", fmt_size(total))
+                    # Si está ordenando por tamaño, reordenar
+                    if hasattr(self, "sort_order_var"):
+                        sort_order = self._sort_value_map.get(self.sort_order_var.get(), "nombre")
+                        if sort_order == "tamano":
+                            self._sort_entries(self._current_entries)
+                            self._render_files(self._current_entries)
                 try: self.after(0, _apply)
                 except Exception: pass
 
